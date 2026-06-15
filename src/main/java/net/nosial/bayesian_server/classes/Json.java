@@ -8,13 +8,6 @@ import com.fasterxml.jackson.databind.PropertyNamingStrategies;
 
 import java.io.IOException;
 
-/**
- * Thin, centralized JSON facade over a single configured Jackson {@link ObjectMapper}.
- *
- * <p>One shared mapper is correct and efficient: {@code ObjectMapper} is thread-safe once
- * configured. Jackson handles UTF-8 and Unicode escaping correctly, which matters because the server
- * routinely processes multilingual text.
- */
 public final class Json
 {
     private static final ObjectMapper READER = createReader();
@@ -23,12 +16,13 @@ public final class Json
     /**
      * Creates and configures the ObjectMapper used for reading incoming requests.
      *
-     * @return a configured ObjectMapper that accepts camelCase and ignores unknown properties
+     * @return a configured ObjectMapper that accepts snake_case and ignores unknown properties
      */
     private static ObjectMapper createReader()
     {
         ObjectMapper mapper = new ObjectMapper();
         mapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+        mapper.setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE);
         return mapper;
     }
 
