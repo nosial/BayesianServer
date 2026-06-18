@@ -8,6 +8,14 @@ import net.nosial.bayesian_server.records.ApiRequest;
 import net.nosial.bayesian_server.records.ApiResponse;
 import net.nosial.bayesian_server.records.LearningQueueStatus;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -16,8 +24,11 @@ import java.util.Set;
 public final class LearningHandler implements ApiHandlerInterface
 {
 
+    private static final Logger LOGGER = LoggerFactory.getLogger(LearningHandler.class);
+
     private final LearningQueue learningQueue;
     private final boolean readOnly;
+    private final Path archivePath;
 
     /**
      * LearningHandler Constructor
@@ -27,14 +38,26 @@ public final class LearningHandler implements ApiHandlerInterface
      */
     public LearningHandler(LearningQueue learningQueue, boolean readOnly)
     {
+        this(learningQueue, readOnly, null);
+    }
+
+    /**
+     * LearningHandler Constructor
+     *
+     * @param learningQueue The learning queue for submitting training tasks
+     * @param readOnly Whether the server is in read-only mode
+     * @param archivePath Optional path to a CSV file for archiving training data
+     */
+    public LearningHandler(LearningQueue learningQueue, boolean readOnly, Path archivePath)
+    {
         this.learningQueue = learningQueue;
         this.readOnly = readOnly;
+        this.archivePath = archivePath;
     }
 
     @Override
     public ApiResponse handle(ApiRequest request)
     {
-
         if(this.readOnly)
         {
             throw ApiException.methodNotAllowed("Server is in read-only mode");
@@ -45,6 +68,11 @@ public final class LearningHandler implements ApiHandlerInterface
         if (tasks.isEmpty())
         {
             throw ApiException.badRequest("provide a 'text' with 'label'/'labels', or a 'documents' array");
+        }
+
+        if (this.archivePath != null)
+        {
+            this.appendToArchive(tasks);
         }
 
         int submitted = 0;
@@ -187,13 +215,63 @@ public final class LearningHandler implements ApiHandlerInterface
      * Response body for {@code PUSH /}. Training is asynchronous, so this acknowledges acceptance
      * rather than completion.
      *
-     * @param accepted        whether all submitted documents were enqueued
-     * @param submitted       number of documents accepted into the learning queue
-     * @param rejected        number of documents rejected due to back-pressure (queue full)
-     * @param pending         approximate number of tasks currently waiting in the queue
-     * @param currentDocs     current total documents learned
-     * @param maxDocs         configured maximum document limit; 0 = unlimited
+     * @param accepted whether all submitted documents were enqueued
+     * @param submitted number of documents accepted into the learning queue
+     * @param rejected number of documents rejected due to back-pressure (queue full)
+     * @param pending approximate number of tasks currently waiting in the queue
+     * @param currentDocs current total documents learned
+     * @param maxDocs configured maximum document limit; 0 = unlimited
      * @param rejectedMaxDocs documents rejected due to max-docs limit since startup
      */
     record LearnResponse(boolean accepted, int submitted, int rejected, int pending, long currentDocs, long maxDocs, long rejectedMaxDocs) { }
+
+    /**
+     * Appends the given training tasks to the CSV archive file. Creates the file with a header row if it does not exist.
+     *
+     *  @param tasks The training task to append to the archive.
+     */
+    private void appendToArchive(List<TrainingTask> tasks)
+    {
+        try
+        {
+            boolean exists = Files.exists(this.archivePath);
+            if (!exists)
+            {
+                Files.writeString(this.archivePath, "labels,content\n", StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
+            }
+
+            List<String> rows = new ArrayList<>(tasks.size());
+            for (TrainingTask task : tasks)
+            {
+                String labels = String.join(";", task.labels());
+                String content = task.text();
+                rows.add(escapeCsv(labels) + "," + escapeCsv(content));
+            }
+
+            Files.write(this.archivePath, rows, StandardCharsets.UTF_8, StandardOpenOption.APPEND);
+        }
+        catch (IOException e)
+        {
+            LOGGER.warn("Failed to write to training archive {}", this.archivePath, e);
+        }
+    }
+
+    /**
+     * Escapes a value for CSV: wraps in quotes if it contains a comma, double-quote, or newline,
+     * and doubles any embedded double-quote characters.
+     */
+    private static String escapeCsv(String value)
+    {
+        if (value == null)
+        {
+            return "";
+        }
+
+        if (value.indexOf(',') >= 0 || value.indexOf('"') >= 0 || value.indexOf('\n') >= 0 || value.indexOf('\r') >= 0)
+        {
+            return "\"" + value.replace("\"", "\"\"") + "\"";
+        }
+
+        return value;
+    }
 }

@@ -13,6 +13,8 @@ import net.nosial.bayesian_server.enums.Filters;
  * tests and defaults).
  *
  * @param modelPath filesystem path the model is loaded from and periodically saved to
+ * @param archivePath optional filesystem path for the training archive CSV;
+ *                    when set, each training request is appended as a CSV row
  * @param host bind address for the HTTP listener
  * @param port bind port for the HTTP listener
  * @param backlog server socket accept backlog
@@ -57,6 +59,7 @@ import net.nosial.bayesian_server.enums.Filters;
  */
 public record ServerConfiguration(
         Path modelPath,
+        Path archivePath,
         String host,
         int port,
         int backlog,
@@ -147,6 +150,7 @@ public record ServerConfiguration(
         private boolean amCaptureClassification = false;
         private List<Filters> filters = List.of();
         private String logLevel = "INFO";
+        private Path archivePath = null;
 
         /**
          * Sets the filesystem path the model is loaded from and saved to.
@@ -556,6 +560,16 @@ public record ServerConfiguration(
         }
 
         /**
+         * Sets the optional filesystem path for the training archive CSV.
+         *
+         * @param v the archive file path, or {@code null} to disable archiving
+         */
+        public void archivePath(Path v)
+        {
+            this.archivePath = v;
+        }
+
+        /**
          * Validates builder state and returns an immutable {@link ServerConfiguration}.
          *
          * @return A new {@link ServerConfiguration} with all values from this builder
@@ -565,14 +579,14 @@ public record ServerConfiguration(
         {
             this.validate();
             return new ServerConfiguration(
-                    this.modelPath, this.host, this.port, this.backlog, this.saveIntervalSeconds,
+                    this.modelPath, this.archivePath, this.host, this.port, this.backlog, this.saveIntervalSeconds,
                     this.smoothingAlpha, this.classificationThreshold, this.normalizeDocumentLength, this.learnerThreads,
                     this.learnQueueCapacity, this.httpWorkerThreads, this.serviceThreads, this.maxRequestBytes,
                     this.minTokenLength, this.maxTokenLength, this.cjkBigrams, this.memoryLimitMB, this.readOnly,
-                    this.useLabelChain, this.priorWeight, this.useComplement, this.useTfIdf,
-                    this.useBm25, this.bm25K1, this.bm25B, this.useOnlineLR, this.lrInitialLearningRate, this.lrDecayRate,
-                    this.mml, this.mmlConfidenceThreshold, this.maxDocs, this.amEnabled, this.amHistorySize,
-                    this.amCaptureRejected, this.amCaptureClassification, this.filters, this.logLevel
+                    this.useLabelChain, this.priorWeight, this.useComplement, this.useTfIdf, this.useBm25, this.bm25K1,
+                    this.bm25B, this.useOnlineLR, this.lrInitialLearningRate, this.lrDecayRate, this.mml,
+                    this.mmlConfidenceThreshold, this.maxDocs, this.amEnabled, this.amHistorySize, this.amCaptureRejected,
+                    this.amCaptureClassification, this.filters, this.logLevel
             );
         }
 

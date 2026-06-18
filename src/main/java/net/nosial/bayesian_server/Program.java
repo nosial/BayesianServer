@@ -142,6 +142,7 @@ public final class Program
             ServerConfiguration.Builder builder = ServerConfiguration.builder();
 
             consume(options, "model", v -> builder.modelPath(Path.of(v)));
+            consume(options, "archive", v -> builder.archivePath(Path.of(v)));
             consume(options, "host", builder::host);
             consume(options, "port", v -> builder.port(Utilities.parseInt("port", v)));
             consume(options, "backlog", v -> builder.backlog(Utilities.parseInt("backlog", v)));
@@ -312,6 +313,8 @@ public final class Program
                    Options:
                       --model <path>                 Model directory to load and periodically persist to
                                                      (default: bayesian-model)
+                      --archive <path>               Path to a CSV file to archive every training
+                                                     request (labels,content columns)
                       --host <addr>                  Bind address (default: 0.0.0.0)
                       --port <n>                     Bind port (default: 8080)
                       --backlog <n>                  Accept backlog (default: 1024)
@@ -348,30 +351,31 @@ public final class Program
                                                      (default: false)
                       --lr-rate <n>                  Initial SGD learning rate for online LR (default: 0.01)
                       --lr-decay <n>                 Learning rate decay factor for online LR (default: 0.001)
-                       --mml <true|false>             Enable Multi-Model Language (per-language models)
-                                                      to reduce mistakes for dedicated languages
-                                                      (default: false)
-                       --mml-confidence-threshold <0..1>
+                      --mml <true|false>             Enable Multi-Model Language (per-language models)
+                                                     to reduce mistakes for dedicated languages
+                                                     (default: false)
+                      --mml-confidence-threshold <0..1>
                                                       Detection confidence below which MML routes to
                                                       the "und" model; lower = more conservative
                                                       (default: 0.35)
-                        --max-docs <n>                 Maximum documents the model may learn; 0 =
-                                                       unlimited. When reached, training is rejected
-                                                       (read-only for learning) (default: 0)
-                        --am-enabled <true|false>    Enable analytical monitoring (default: true)
-                        --am-history-size <n>          Max analytics entries to retain (default: 10000)
-                        --am-capture-rejected <true|false>
-                                                       Capture rejected learning tasks in analytics
-                                                       (default: true)
-                         --am-capture-classification <true|false>
-                                                        Capture classification requests in analytics
-                                                        (default: false)
-                          --filters <list>               Comma-separated pre-tokenization filters
-                                                         (e.g. email,url,username). Default: none
-                          --log-level <level>             Logging level: TRACE, DEBUG, INFO, WARN,
-                                                         ERROR, OFF (default: INFO). Also settable
-                                                         via BS_LOG_LEVEL env var.
-                          -h, --help                     Show this help and exit
+                      --max-docs <n>                  Maximum documents the model may learn; 0 =
+                                                      unlimited. When reached, training is rejected
+                                                      (read-only for learning) (default: 0)
+                      --am-enabled <true|false>       Enable analytical monitoring (default: true)
+                      --am-history-size <n>           Max analytics entries to retain (default: 10000)
+                      --am-capture-rejected <true|false>
+                                                      Capture rejected learning tasks in analytics
+                                                      (default: true)
+                      --am-capture-classification <true|false>
+                                                      Capture classification requests in analytics
+                                                      (default: false)
+
+                      --filters <list>                Comma-separated pre-tokenization filters
+                                                      (e.g. email,url,username). Default: none
+                      --log-level <level>             Logging level: TRACE, DEBUG, INFO, WARN,
+                                                      ERROR, OFF (default: INFO). Also settable
+                                                      via BS_LOG_LEVEL env var.
+                      -h, --help                      Show this help and exit
                  \s""";
         }
     }

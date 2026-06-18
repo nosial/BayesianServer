@@ -64,7 +64,7 @@ public final class BayesianServer implements AutoCloseable
             HttpRouter httpRouter = new HttpRouter()
                     .register("GET", "/", new ModelInformation(this.languageModelManager, this.learningQueue, config, startMillis))
                     .register("POST", "/", classificationHandler)
-                    .register("PUSH", "/", new LearningHandler(this.learningQueue, config.readOnly()))
+                    .register("PUSH", "/", new LearningHandler(this.learningQueue, config.readOnly(), config.archivePath()))
                     .register("GET", "/health", new HealthHandler())
                     .register("GET", "/analytics", new AnalyticsHandler(monitoring))
                     .register("POST", "/analytics", new AnalyticsHandler(monitoring));
@@ -88,7 +88,7 @@ public final class BayesianServer implements AutoCloseable
             HttpRouter httpRouter = new HttpRouter()
                     .register("GET", "/", new ModelInformation(this.model, this.learningQueue, config, startMillis))
                     .register("POST", "/", classificationHandler)
-                    .register("PUSH", "/", new LearningHandler(this.learningQueue, config.readOnly()))
+                    .register("PUSH", "/", new LearningHandler(this.learningQueue, config.readOnly(), config.archivePath()))
                     .register("GET", "/health", new HealthHandler())
                     .register("GET", "/analytics", new AnalyticsHandler(monitoring))
                     .register("POST", "/analytics", new AnalyticsHandler(monitoring));
