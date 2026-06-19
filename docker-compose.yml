@@ -1,0 +1,51 @@
+services:
+  bayesian-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BUILD_DATE: ${BUILD_DATE:-}
+        REVISION: ${GIT_COMMIT:-}
+        VERSION: ${VERSION:-1.0.0}
+    container_name: bayesian-server
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 60s
+    ports:
+      - "8080:8080"
+    volumes:
+      - bayesian-model:/data/model
+      - bayesian-logs:/data/logs
+      - ./archive.csv:/data/archive.csv:ro
+    environment:
+      - BS_LOG_LEVEL=${BS_LOG_LEVEL:-INFO}
+      - BS_PORT=8080
+      - BS_HOST=0.0.0.0
+      - BS_SAVE_INTERVAL=${BS_SAVE_INTERVAL:-60}
+      - BS_ARCHIVE=/data/archive.csv
+
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+    deploy:
+      resources:
+        limits:
+          cpus: "4"
+          memory: 2G
+        reservations:
+          cpus: "1"
+          memory: 512M
+
+volumes:
+  bayesian-model:
+  bayesian-logs:
