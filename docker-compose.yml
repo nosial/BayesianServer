@@ -16,13 +16,13 @@ services:
     volumes:
       - bayesian-model:/data/model
       - bayesian-logs:/data/logs
-      - ./archive.csv:/data/archive.csv:ro
+      - bayesian-archive:/data/archive
     environment:
       - BS_LOG_LEVEL=${BS_LOG_LEVEL:-INFO}
       - BS_PORT=8080
       - BS_HOST=0.0.0.0
       - BS_SAVE_INTERVAL=${BS_SAVE_INTERVAL:-60}
-      - BS_ARCHIVE=/data/archive.csv
+      - BS_ARCHIVE=/data/archive/archive.csv
 
     logging:
       driver: json-file
@@ -49,3 +49,4 @@ services:
 volumes:
   bayesian-model:
   bayesian-logs:
+  bayesian-archive:
