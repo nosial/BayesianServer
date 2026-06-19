@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    Default logging configuration for BayesianServer.
+
+    Log level can be overridden at runtime without rebuilding by passing a system property, e.g.
+        java -Dbayesian.log.level=DEBUG -jar bayesian-server.jar ...
+    The on-disk log directory can be overridden with -Dbayesian.log.dir=/var/log/bayesian-server
+-->
+<configuration scan="false">
+
+    <property name="LOG_DIR" value="${bayesian.log.dir:-logs}"/>
+    <property name="ROOT_LEVEL" value="${bayesian.log.level:-INFO}"/>
+
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${LOG_DIR}/bayesian-server.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <fileNamePattern>${LOG_DIR}/bayesian-server.%d{yyyy-MM-dd}.%i.log.gz</fileNamePattern>
+            <maxFileSize>50MB</maxFileSize>
+            <maxHistory>30</maxHistory>
+            <totalSizeCap>2GB</totalSizeCap>
+        </rollingPolicy>
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <!-- Netty can be chatty at DEBUG; keep it at INFO unless explicitly tuned. -->
+    <logger name="io.netty" level="INFO"/>
+
+    <root level="${ROOT_LEVEL}">
+        <appender-ref ref="CONSOLE"/>
+        <appender-ref ref="FILE"/>
+    </root>
+
+</configuration>
