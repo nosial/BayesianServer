@@ -1,0 +1,13 @@
+.git
+.gitignore
+.gitmodules
+.gitattributes
+.github
+.gitlab
+.idea
+.vscode
+*.md
+LICENSE
+target
+Dockerfile
+docker-compose.yml
