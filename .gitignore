@@ -43,3 +43,4 @@ logs/
 *.bin
 *.bin.bak
 *.bin.tmp
+/.idea/
