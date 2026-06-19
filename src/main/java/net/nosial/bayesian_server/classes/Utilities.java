@@ -3,10 +3,8 @@ package net.nosial.bayesian_server.classes;
 import net.nosial.bayesian_server.exceptions.CommandLineException;
 
 import java.io.IOException;
-import java.nio.file.DirectoryStream;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
+import java.nio.file.*;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -262,13 +260,45 @@ public final class Utilities
         }
         catch (IOException e)
         {
-            LOGGER.debug("Atomic move not supported for {} -> {}; falling back to non-atomic: {}", from, to, e.getMessage());
+            LOGGER.debug("Atomic move not supported for {} -> {}; falling back to recursive: {}", from, to, e.getMessage());
             if (Files.exists(to))
             {
-                deleteRecursively(to);
+                cleanDirectory(to);
+            }
+            else
+            {
+                Files.createDirectories(to);
             }
 
-            Files.move(from, to, StandardCopyOption.REPLACE_EXISTING);
+            Files.walkFileTree(from, new SimpleFileVisitor<>()
+            {
+                @Override
+                public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) throws IOException
+                {
+                    Files.createDirectories(to.resolve(from.relativize(dir)));
+                    return FileVisitResult.CONTINUE;
+                }
+
+                @Override
+                public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException
+                {
+                    Files.move(file, to.resolve(from.relativize(file)), StandardCopyOption.REPLACE_EXISTING);
+                    return FileVisitResult.CONTINUE;
+                }
+
+                @Override
+                public FileVisitResult postVisitDirectory(Path dir, IOException exc) throws IOException
+                {
+                    if (exc == null)
+                    {
+                        Files.delete(dir);
+                        return FileVisitResult.CONTINUE;
+                    }
+                    throw exc;
+                }
+            });
+
+            Files.deleteIfExists(from);
         }
     }
 
