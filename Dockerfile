@@ -28,7 +28,7 @@ WORKDIR /app
 
 COPY --from=builder /build/target/bayesian-server.jar /app/bayesian-server.jar
 
-RUN mkdir -p /data/model /data/logs && chown -R bayesian:bayesian /app /data
+RUN mkdir -p /data/model /data/logs /data/archive && chown -R bayesian:bayesian /app /data
 
 USER bayesian
 
