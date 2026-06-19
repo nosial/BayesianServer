@@ -202,9 +202,9 @@ class SchedulerTest
             }
 
             @Override
-            public void save(NaiveBayesModel m)
+            public void save(NaiveBayesModel m) throws IOException
             {
-                throw new RuntimeException("simulated crash");
+                throw new IOException("simulated crash");
             }
 
             @Override
@@ -218,7 +218,7 @@ class SchedulerTest
         {
             scheduler.markPersisted();
             model.train("data", List.of("x"));
-            assertThrows(RuntimeException.class, scheduler::saveNow);
+            assertThrows(IOException.class, scheduler::saveNow);
         }
     }
 }
