@@ -1,6 +1,9 @@
 package net.nosial.bayesian_server.classes;
 
 import net.nosial.bayesian_server.Program;
+import net.nosial.bayesian_server.classes.http.HttpApiServer;
+import net.nosial.bayesian_server.classes.http.HttpRouter;
+import net.nosial.bayesian_server.records.ApiResponse;
 import net.nosial.bayesian_server.records.ClassificationResult;
 import net.nosial.bayesian_server.records.LabelSnapshot;
 import net.nosial.bayesian_server.records.ServerConfiguration;
@@ -9,14 +12,22 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.api.Timeout;
 
+import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.InputStreamReader;
+import java.io.OutputStream;
+import java.net.Socket;
+import java.net.SocketTimeoutException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.IntStream;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -25,6 +36,11 @@ class SecurityTest
     private NaiveBayesModel newModel()
     {
         return new NaiveBayesModel(new UnicodeTokenizer(1, 40, true), 1.0);
+    }
+
+    private NaiveBayesModel unboundedTokenModel()
+    {
+        return new NaiveBayesModel(new UnicodeTokenizer(1, 0, true), 1.0);
     }
 
     @Test
@@ -127,6 +143,17 @@ class SecurityTest
     }
 
     @Test
+    void shouldRejectMoreThanMaximumLabelsOnSingleDocument()
+    {
+        NaiveBayesModel model = newModel();
+        List<String> tooManyLabels = IntStream.range(0, NaiveBayesModel.MAX_LABELS_PER_DOCUMENT + 1)
+                .mapToObj(i -> "label-" + i)
+                .toList();
+
+        assertThrows(IllegalArgumentException.class, () -> model.train("shared document text", tooManyLabels));
+    }
+
+    @Test
     void shouldAcceptLabelsWithControlCharacters()
     {
         NaiveBayesModel model = newModel();
@@ -172,14 +199,12 @@ class SecurityTest
 
     @Test
     @Timeout(5)
-    void shouldTokenizeVeryLongWordWithinTimeout()
+    void shouldDropTokensThatCannotBePersisted()
     {
         UnicodeTokenizer tokenizer = new UnicodeTokenizer(1, 100_000, true);
-        // Single word of 50k characters
+        // A 50k token exceeds the persistence-safe ceiling and must not reach ModelStore.writeUTF.
         String longWord = "a".repeat(50_000);
-        List<String> tokens = tokenizer.tokenize(longWord);
-        assertEquals(1, tokens.size());
-        assertEquals(longWord, tokens.getFirst());
+        assertTrue(tokenizer.tokenize(longWord).isEmpty());
     }
 
     @Test
@@ -878,5 +903,127 @@ class SecurityTest
         ClassificationResult result = model.classify("data", 0, 0.5);
         assertNotNull(result);
         assertEquals("x", result.topLabel());
+    }
+    @Test
+    void shouldPersistDistinctLabelsWithoutFilenameCollision(@TempDir Path dir) throws IOException
+    {
+        NaiveBayesModel model = newModel();
+        model.train("alpha only", List.of("!"));
+        model.train("beta only", List.of("_0021"));
+
+        ModelStore store = new ModelStore(dir.resolve("model"));
+        store.save(model);
+
+        NaiveBayesModel loaded = newModel();
+        assertTrue(store.load(loaded));
+        LabelSnapshot escapedLabel = loaded.snapshotLabel("!");
+        LabelSnapshot literalLabel = loaded.snapshotLabel("_0021");
+
+        assertFalse(Arrays.equals(escapedLabel.tokens(), literalLabel.tokens()),
+                "distinct labels must not be restored from one shared label file");
+    }
+
+    @Test
+    void shouldNotAllowShortLabelToDisableAllModelSaves(@TempDir Path dir)
+    {
+        NaiveBayesModel model = newModel();
+        model.train("ordinary content", List.of("!".repeat(51)));
+
+        assertDoesNotThrow(() -> new ModelStore(dir.resolve("model")).save(model),
+                "an accepted 51-character label must not make every later save fail with ENAMETOOLONG");
+    }
+
+    @Test
+    void shouldPersistAnAcceptedRequestSizedToken(@TempDir Path dir)
+    {
+        NaiveBayesModel model = unboundedTokenModel();
+        model.train("a".repeat(70_000), List.of("safe"));
+
+        assertDoesNotThrow(() -> new ModelStore(dir.resolve("model")).save(model),
+                "an accepted token must not make persistence fail with UTFDataFormatException");
+    }
+
+    @Test
+    void shouldUseLinearStorageForUntrustedLabelFanout()
+    {
+        NaiveBayesModel model = newModel();
+        List<String> labels = IntStream.range(0, 128).mapToObj(i -> "label-" + i).toList();
+        model.train("one document", labels);
+
+        int cooccurrenceEntries = model.snapshotLabelOccurrence().values().stream().mapToInt(java.util.Map::size).sum();
+        assertTrue(cooccurrenceEntries <= labels.size(),
+                "one document must not allocate a complete directed label-pair matrix");
+    }
+
+    @Test
+    void shouldRejectLowercaseVariantOfRegisteredHttpMethod(@TempDir Path dir) throws Exception
+    {
+        HttpRouter router = new HttpRouter().register("PUSH", "/", request -> ApiResponse.status(202, null));
+        HttpApiServer server = new HttpApiServer(testConfig(dir), router);
+        server.start();
+
+        try (Socket socket = new Socket("127.0.0.1", server.boundPort()))
+        {
+            socket.setSoTimeout(2_000);
+            send(socket, "push / HTTP/1.1\r\nHost: example\r\nConnection: close\r\n\r\n");
+
+            assertEquals("HTTP/1.1 405 Method Not Allowed", readStatusLine(socket),
+                    "HTTP method matching must preserve method token case");
+        }
+        finally
+        {
+            server.close();
+        }
+    }
+
+    @Test
+    @Timeout(3)
+    void shouldCloseIncompleteRequestWithinReadTimeout(@TempDir Path dir) throws Exception
+    {
+        HttpApiServer server = new HttpApiServer(testConfig(dir), new HttpRouter());
+        server.start();
+
+        try (Socket socket = new Socket("127.0.0.1", server.boundPort()))
+        {
+            socket.setSoTimeout(750);
+            send(socket, "GET / HTTP/1.1\r\nHost: example");
+
+            try
+            {
+                assertEquals(-1, socket.getInputStream().read(),
+                        "an incomplete request must be closed rather than retained indefinitely");
+            }
+            catch (SocketTimeoutException e)
+            {
+                fail("server kept an incomplete request open beyond the read-timeout window", e);
+            }
+        }
+        finally
+        {
+            server.close();
+        }
+    }
+
+    private static ServerConfiguration testConfig(Path dir)
+    {
+        return ServerConfiguration.builder()
+                .host("127.0.0.1")
+                .port(0)
+                .saveIntervalSeconds(0)
+                .modelPath(dir.resolve("model"))
+                .requestReadTimeoutMillis(500)
+                .build();
+    }
+
+    private static void send(Socket socket, String request) throws IOException
+    {
+        OutputStream output = socket.getOutputStream();
+        output.write(request.getBytes(StandardCharsets.US_ASCII));
+        output.flush();
+    }
+
+    private static String readStatusLine(Socket socket) throws IOException
+    {
+        return new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.US_ASCII)).readLine();
     }
 }

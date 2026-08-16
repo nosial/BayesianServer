@@ -64,11 +64,13 @@ class HttpRouterEdgeCaseTest
     }
 
     @Test
-    void shouldAllowCaseInsensitiveMethodOverride()
+    void shouldRejectCaseVariantOfRegisteredMethod()
     {
         HttpRouter router = new HttpRouter().register("GET", "/health", r -> null);
-        assertNotNull(router.resolve("get", "/health"));
-        assertNotNull(router.resolve("Get", "/health"));
+        ApiException lowerCase = assertThrows(ApiException.class, () -> router.resolve("get", "/health"));
+        ApiException mixedCase = assertThrows(ApiException.class, () -> router.resolve("Get", "/health"));
+        assertEquals(405, lowerCase.status());
+        assertEquals(405, mixedCase.status());
     }
 
     @Test

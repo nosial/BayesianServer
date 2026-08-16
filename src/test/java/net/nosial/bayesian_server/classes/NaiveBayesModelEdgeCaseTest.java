@@ -697,7 +697,7 @@ class NaiveBayesModelEdgeCaseTest
     @Test
     void cooccurrenceShouldTrackLabelPairs()
     {
-        NaiveBayesModel model = newModel();
+        NaiveBayesModel model = new NaiveBayesModel(new UnicodeTokenizer(1, 40, true), 1.0, false, true);
         model.train("a", List.of("x", "y"));
         model.train("a", List.of("y", "z"));
         Map<String, Map<String, Long>> cooc = model.snapshotLabelOccurrence();
