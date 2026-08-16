@@ -24,6 +24,7 @@ plug it in as a spam filter. Users submit examples of spam and not spam, and the
       * [`--threshold <0..1>`](#--threshold-01)
       * [`--http-worker-threads <n>` / `--service-threads <n>`](#--http-worker-threads-n----service-threads-n)
       * [`--max-request-size <size>`](#--max-request-size-size)
+      * [`--request-read-timeout-ms <n>`](#--request-read-timeout-ms-n)
       * [`--learner-threads <n>` / `--learn-queue-capacity <n>`](#--learner-threads-n----learn-queue-capacity-n)
       * [`--min-token-length <n>` / `--max-token-length <n>`](#--min-token-length-n----max-token-length-n)
       * [`--cjk-bigrams <bool>`](#--cjk-bigrams-bool)
@@ -141,6 +142,7 @@ The server can be configured using command-line arguments, every option can also
 | `--http-worker-threads <n>`          | `BS_HTTP_WORKER_THREADS`       | `auto`           | Integer           | Netty I/O worker threads                                        |
 | `--service-threads <n>`              | `BS_SERVICE_THREADS`           | `#cores`         | Integer           | Handler execution threads                                       |
 | `--max-request-size <size>`          | `BS_MAX_REQUEST_SIZE`          | `8MB`            | Size string       | Max HTTP request body                                           |
+| `--request-read-timeout-ms <n>`      | `BS_REQUEST_READ_TIMEOUT_MS`   | `30000`          | Integer (>=100)   | Max idle time while receiving an HTTP request                   |
 | `--read-only <bool>`                 | `BS_READ_ONLY`                 | `false`          | Boolean           | Load model in read-only mode; disables learning and persistence |
 | `--bm25 <bool>`                      | `BS_BM25`                      | `false`          | Boolean           | Enable BM25 term weighting                                      |
 | `--bm25-k1 <n>`                      | `BS_BM25_K1`                   | `1.5`            | Double (>=0)      | BM25 term frequency saturation parameter                        |
@@ -227,6 +229,11 @@ The default probability cut-off used to build the multi-label prediction set. Ea
 Maximum accepted HTTP request body size. Accepts plain bytes or human-friendly suffixes (`KB`, `MB`, `GB`). Requests
 larger than this are rejected with HTTP 413.
 
+#### `--request-read-timeout-ms <n>`
+
+Maximum interval between inbound bytes while a request is being received. The server closes an idle or stalled connection
+after this timeout; the default is 30,000 milliseconds.
+
 #### `--learner-threads <n>` / `--learn-queue-capacity <n>`
 
 The learning queue decouples HTTP request latency from model training. The queue is a bounded `ArrayBlockingQueue`.
@@ -235,9 +242,8 @@ drain the queue. `learn-queue-capacity` controls how many `TrainingTask` objects
 
 #### `--min-token-length <n>` / `--max-token-length <n>`
 
-Token length bounds in Unicode code points (not bytes). Set to `0` to disable the bound (no minimum / no maximum).
-Tokens shorter than `min-token-length` or longer than `max-token-length` are discarded after tokenization.
-These are applied after NFKC normalization and lowercasing.
+Token length bounds in Unicode code points (not bytes). Set the minimum to `0` to disable it. A maximum of `0` uses the
+persistable safety ceiling (8,192 code points), preventing one accepted token from making model persistence fail.
 
 #### `--cjk-bigrams <bool>`
 
@@ -546,26 +552,26 @@ Optional overrides:
 }
 ```
 
-| Field                             | Type   | Description                                                       |
-|-----------------------------------|--------|-------------------------------------------------------------------|
-| `labels`                          | array  | Per-label scores sorted by `posterior` descending                 |
-| `labels[n].label`                 | string | The label name                                                    |
-| `labels[n].posterior`             | double | Multinomial posterior (sums to 1 across labels)                   |
-| `labels[n].probability`           | double | One-vs-rest probability (independent per label)                   |
-| `labels[n].log_score`             | double | Log-space score used internally                                   |
-| `labels[n].lr_probability`        | double | LR-calibrated probability; `null` when online LR is disabled      |
-| `top_label`                       | string | Single most probable label                                        |
-| `top_probability`                 | double | Posterior of the top label                                        |
-| `predicted_labels`                | array  | Labels whose probability meets the effective threshold            |
-| `threshold`                       | double | The decision threshold applied                                    |
-| `total_tokens`                    | int    | Token count after tokenization                                    |
-| `known_tokens`                    | int    | Subset of tokens present in the vocabulary                        |
-| `unknown_token_count`             | int    | Subset of tokens not found in the vocabulary                      |
-| `model_version`                   | long   | Model version at classification time                              |
-| `scoring_method`                  | string | Active scoring pipeline: `naive_bayes`, `naive_bayes+bm25`, `naive_bayes+online_lr`, `naive_bayes+bm25+online_lr`, or `mml_ensemble` (MML mid-confidence only) |
-| `language_code`                   | string | Detected language code                                            |
-| `confidence`                      | double | Language detection confidence (0..1)                              |
-| `processing_time_ms`              | long   | Time taken to classify in milliseconds                            |
+| Field                      | Type   | Description                                                                                                                                                    |
+|----------------------------|--------|----------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `labels`                   | array  | Per-label scores sorted by `posterior` descending                                                                                                              |
+| `labels[n].label`          | string | The label name                                                                                                                                                 |
+| `labels[n].posterior`      | double | Multinomial posterior (sums to 1 across labels)                                                                                                                |
+| `labels[n].probability`    | double | One-vs-rest probability (independent per label)                                                                                                                |
+| `labels[n].log_score`      | double | Log-space score used internally                                                                                                                                |
+| `labels[n].lr_probability` | double | LR-calibrated probability; `null` when online LR is disabled                                                                                                   |
+| `top_label`                | string | Single most probable label                                                                                                                                     |
+| `top_probability`          | double | Posterior of the top label                                                                                                                                     |
+| `predicted_labels`         | array  | Labels whose probability meets the effective threshold                                                                                                         |
+| `threshold`                | double | The decision threshold applied                                                                                                                                 |
+| `total_tokens`             | int    | Token count after tokenization                                                                                                                                 |
+| `known_tokens`             | int    | Subset of tokens present in the vocabulary                                                                                                                     |
+| `unknown_token_count`      | int    | Subset of tokens not found in the vocabulary                                                                                                                   |
+| `model_version`            | long   | Model version at classification time                                                                                                                           |
+| `scoring_method`           | string | Active scoring pipeline: `naive_bayes`, `naive_bayes+bm25`, `naive_bayes+online_lr`, `naive_bayes+bm25+online_lr`, or `mml_ensemble` (MML mid-confidence only) |
+| `language_code`            | string | Detected language code                                                                                                                                         |
+| `confidence`               | double | Language detection confidence (0..1)                                                                                                                           |
+| `processing_time_ms`       | long   | Time taken to classify in milliseconds                                                                                                                         |
 
 `topK` limits the `labels` array. `<= 0` returns all labels.
 
