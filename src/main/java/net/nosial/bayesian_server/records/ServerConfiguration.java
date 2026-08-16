@@ -27,6 +27,7 @@ import net.nosial.bayesian_server.enums.Filters;
  * @param httpWorkerThreads Netty worker event-loop threads (0 = Netty default of 2x cores)
  * @param serviceThreads threads used to execute request handlers off the I/O event loop
  * @param maxRequestBytes maximum accepted HTTP request body size in bytes
+ * @param requestReadTimeoutMillis maximum idle duration while receiving a request
  * @param minTokenLength shortest token length retained by the tokenizer
  * @param maxTokenLength longest token length retained by the tokenizer
  * @param cjkBigrams whether to emit character bigrams for scriptio-continua languages
@@ -72,6 +73,7 @@ public record ServerConfiguration(
         int httpWorkerThreads,
         int serviceThreads,
         int maxRequestBytes,
+        long requestReadTimeoutMillis,
         int minTokenLength,
         int maxTokenLength,
         boolean cjkBigrams,
@@ -126,6 +128,7 @@ public record ServerConfiguration(
         private int httpWorkerThreads = 0;
         private int serviceThreads = Math.max(2, Runtime.getRuntime().availableProcessors());
         private int maxRequestBytes = 8 * 1024 * 1024;
+        private long requestReadTimeoutMillis = 30_000;
         private int minTokenLength = 2;
         private int maxTokenLength = 0;
         private boolean cjkBigrams = true;
@@ -288,6 +291,18 @@ public record ServerConfiguration(
         public void maxRequestBytes(int v)
         {
             this.maxRequestBytes = v;
+        }
+
+        /**
+         * Sets the maximum idle duration while receiving an HTTP request.
+         *
+         * @param v the timeout in milliseconds
+         * @return this builder
+         */
+        public Builder requestReadTimeoutMillis(long v)
+        {
+            this.requestReadTimeoutMillis = v;
+            return this;
         }
 
         /**
@@ -582,7 +597,7 @@ public record ServerConfiguration(
                     this.modelPath, this.archivePath, this.host, this.port, this.backlog, this.saveIntervalSeconds,
                     this.smoothingAlpha, this.classificationThreshold, this.normalizeDocumentLength, this.learnerThreads,
                     this.learnQueueCapacity, this.httpWorkerThreads, this.serviceThreads, this.maxRequestBytes,
-                    this.minTokenLength, this.maxTokenLength, this.cjkBigrams, this.memoryLimitMB, this.readOnly,
+                    this.requestReadTimeoutMillis, this.minTokenLength, this.maxTokenLength, this.cjkBigrams, this.memoryLimitMB, this.readOnly,
                     this.useLabelChain, this.priorWeight, this.useComplement, this.useTfIdf, this.useBm25, this.bm25K1,
                     this.bm25B, this.useOnlineLR, this.lrInitialLearningRate, this.lrDecayRate, this.mml,
                     this.mmlConfidenceThreshold, this.maxDocs, this.amEnabled, this.amHistorySize, this.amCaptureRejected,
@@ -650,6 +665,11 @@ public record ServerConfiguration(
             if (this.maxRequestBytes < 1024)
             {
                 throw new IllegalArgumentException("maxRequestBytes must be >= 1024");
+            }
+
+            if (this.requestReadTimeoutMillis < 100)
+            {
+                throw new IllegalArgumentException("requestReadTimeoutMillis must be >= 100");
             }
 
             if (this.minTokenLength < 0)

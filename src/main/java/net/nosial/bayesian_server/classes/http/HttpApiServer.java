@@ -73,7 +73,7 @@ public final class HttpApiServer implements AutoCloseable
                 .option(ChannelOption.SO_REUSEADDR, true)
                 .childOption(ChannelOption.SO_KEEPALIVE, true)
                 .childOption(ChannelOption.TCP_NODELAY, true)
-                .childHandler(new HttpServerInitializer(config.maxRequestBytes(), dispatcher));
+                .childHandler(new HttpServerInitializer(config.maxRequestBytes(), config.requestReadTimeoutMillis(), dispatcher));
 
         serverChannel = bootstrap.bind(new InetSocketAddress(config.host(), config.port())).sync().channel();
 

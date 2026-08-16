@@ -21,7 +21,7 @@ public final class HttpRouter
      */
     public HttpRouter register(String method, String path, ApiHandlerInterface handler)
     {
-        this.routes.computeIfAbsent(path, p -> new TreeMap<>(String.CASE_INSENSITIVE_ORDER)).put(method, handler);
+        this.routes.computeIfAbsent(path, p -> new TreeMap<>()).put(method, handler);
         return this;
     }
 

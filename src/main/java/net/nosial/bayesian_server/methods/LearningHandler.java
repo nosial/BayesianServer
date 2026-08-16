@@ -21,6 +21,8 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 
+import net.nosial.bayesian_server.classes.NaiveBayesModel;
+
 public final class LearningHandler implements ApiHandlerInterface
 {
 
@@ -182,6 +184,11 @@ public final class LearningHandler implements ApiHandlerInterface
         if (labels.isEmpty())
         {
             throw ApiException.badRequest("each document requires at least one non-empty label");
+        }
+
+        if (labels.size() > NaiveBayesModel.MAX_LABELS_PER_DOCUMENT)
+        {
+            throw ApiException.badRequest("each document may have at most " + NaiveBayesModel.MAX_LABELS_PER_DOCUMENT + " labels");
         }
 
         return labels;

@@ -2,6 +2,10 @@ package net.nosial.bayesian_server.classes;
 
 import net.nosial.bayesian_server.exceptions.CommandLineException;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
 import java.io.IOException;
 import java.nio.file.*;
 import java.nio.file.attribute.BasicFileAttributes;
@@ -175,29 +179,50 @@ public final class Utilities
     }
 
     /**
-     * Encodes a label name into a safe filename by escaping non-alphanumeric characters.
+     * Encodes a label name into a collision-resistant, filesystem-safe filename.
+     *
+     * <p>The escape marker itself is escaped, making the short encoding injective. Long encoded
+     * names use a SHA-256 filename to stay below filesystem component limits while preserving a
+     * stable one-to-one mapping for practical purposes.
      *
      * @param label the label name
      * @return a filesystem-safe filename (without extension)
      */
     public static String labelToFileName(String label)
     {
-        StringBuilder sb = new StringBuilder();
+        StringBuilder encoded = new StringBuilder(label.length());
         for (int i = 0; i < label.length(); i++)
         {
             char c = label.charAt(i);
-            if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '.' || c == '_')
+            if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '.')
             {
-                sb.append(c);
+                encoded.append(c);
             }
             else
             {
-                sb.append(String.format("_%04x", (int) c));
+                encoded.append('_');
+                String hex = Integer.toHexString(c);
+                encoded.append("0000", 0, 4 - hex.length()).append(hex);
             }
         }
 
-        return sb.toString();
+        if (encoded.length() <= MAX_LABEL_FILE_STEM_LENGTH)
+        {
+            return encoded.toString();
+        }
+
+        try
+        {
+            byte[] digest = MessageDigest.getInstance("SHA-256").digest(label.getBytes(StandardCharsets.UTF_8));
+            return "sha256-" + HexFormat.of().formatHex(digest);
+        }
+        catch (NoSuchAlgorithmException e)
+        {
+            throw new IllegalStateException("SHA-256 is unavailable", e);
+        }
     }
+    private static final int MAX_LABEL_FILE_STEM_LENGTH = 200;
+
 
     /**
      * Removes all contents of the given directory without deleting the directory itself.

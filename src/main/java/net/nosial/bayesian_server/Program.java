@@ -155,6 +155,7 @@ public final class Program
             consume(options, "http-worker-threads", v -> builder.httpWorkerThreads(Utilities.parseInt("http-worker-threads", v)));
             consume(options, "service-threads", v -> builder.serviceThreads(Utilities.parseInt("service-threads", v)));
             consume(options, "max-request-size", v -> builder.maxRequestBytes(Utilities.parseSize("max-request-size", v)));
+            consume(options, "request-read-timeout-ms", v -> builder.requestReadTimeoutMillis(Utilities.parseLong("request-read-timeout-ms", v)));
             consume(options, "min-token-length", v -> builder.minTokenLength(Utilities.parseInt("min-token-length", v)));
             consume(options, "max-token-length", v -> builder.maxTokenLength(Utilities.parseInt("max-token-length", v)));
             consume(options, "cjk-bigrams", v -> builder.cjkBigrams(Utilities.parseBoolean("cjk-bigrams", v)));
@@ -327,9 +328,10 @@ public final class Program
                       --http-worker-threads <n>      Netty worker threads, 0 = auto (default: 0)
                       --service-threads <n>          Handler execution threads (default: #cores)
                       --max-request-size <size>      Max request body, e.g. 8MB (default: 8MB)
+                      --request-read-timeout-ms <n>  Max idle time while receiving a request
+                                                     (default: 30000)
                       --min-token-length <n>         Shortest retained token; 0 = unlimited (default: 2)
-                      --max-token-length <n>         Longest retained token; 0 = unlimited (default: 0)
-                      --cjk-bigrams <true|false>     Character bigrams for CJK text (default: true)
+                      --max-token-length <n>         Longest retained token; 0 uses the persistence-safe limit
                       --memory-limit <MB>            Max heap (MB) for label token data; 0 = unlimited
                                                      (default: 0). When set, labels are evicted and
                                                      reloaded from disk to stay within the limit.

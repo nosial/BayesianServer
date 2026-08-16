@@ -13,6 +13,12 @@ public final class UnicodeTokenizer implements TokenizerInterface
     private final int minTokenLength;
     private final int maxTokenLength;
     private final boolean cjkBigrams;
+    /**
+     * DataOutputStream.writeUTF, used by the model store, accepts at most 65,535 modified UTF-8
+     * bytes. This conservative code-point limit keeps tokens persistable even for supplementary
+     * characters while bounding per-token heap use.
+     */
+    private static final int PERSISTABLE_MAX_TOKEN_LENGTH = 8_192;
 
     /**
      * Creates a new Unicode tokenizer.
@@ -132,13 +138,13 @@ public final class UnicodeTokenizer implements TokenizerInterface
         current.setLength(0);
         int codePointLength = token.codePointCount(0, token.length());
         boolean passesMin = this.minTokenLength == 0 || codePointLength >= this.minTokenLength;
-        boolean passesMax = this.maxTokenLength == 0 || codePointLength <= this.maxTokenLength;
-        if (passesMin && passesMax)
+        int effectiveMaxTokenLength = this.maxTokenLength == 0
+                ? PERSISTABLE_MAX_TOKEN_LENGTH
+                : Math.min(this.maxTokenLength, PERSISTABLE_MAX_TOKEN_LENGTH);
+        boolean passesMax = codePointLength <= effectiveMaxTokenLength;
+        if (passesMin && passesMax && !stopWords.contains(token))
         {
-            if (!stopWords.contains(token))
-            {
-                tokens.add(token);
-            }
+            tokens.add(token);
         }
     }
 

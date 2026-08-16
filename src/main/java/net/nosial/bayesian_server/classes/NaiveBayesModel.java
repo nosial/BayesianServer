@@ -35,6 +35,11 @@ import org.slf4j.LoggerFactory;
 public final class NaiveBayesModel
 {
     private static final Logger LOGGER = LoggerFactory.getLogger(NaiveBayesModel.class);
+    /**
+     * Bounds pair tracking to at most 16,256 directed entries per document when label-chain mode
+     * is enabled. The limit is enforced at the HTTP boundary and again here for direct callers.
+     */
+    public static final int MAX_LABELS_PER_DOCUMENT = 128;
     /** Base bytes per token entry used by the Caffeine weigher.
      *  Increased under memory pressure to force more aggressive eviction. */
     private volatile int bytesPerTokenEntry = 256;
@@ -317,6 +322,10 @@ public final class NaiveBayesModel
         {
             Utilities.requireNonBlankLabel(label);
             uniqueLabels.add(label);
+            if (uniqueLabels.size() > MAX_LABELS_PER_DOCUMENT)
+            {
+                throw new IllegalArgumentException("a document may have at most " + MAX_LABELS_PER_DOCUMENT + " labels");
+            }
         }
 
         List<String> tokens = this.tokenizer.tokenize(text, stopWords);
@@ -368,23 +377,27 @@ public final class NaiveBayesModel
         this.totalDocuments.incrementAndGet();
         this.version.incrementAndGet();
 
-        // Track label dependencies for lightweight post-hoc chain correction.
         for (String label : uniqueLabels)
         {
             this.labelDocumentCount.computeIfAbsent(label, k -> new AtomicLong()).incrementAndGet();
         }
 
-        for (String a : uniqueLabels)
+        if (this.useLabelChain)
         {
-            for (String b : uniqueLabels)
+            // Label-chain correction is the only consumer of pair counts. Avoid retaining a
+            // quadratic matrix in the default classifier configuration.
+            for (String a : uniqueLabels)
             {
-                if (a.equals(b))
+                for (String b : uniqueLabels)
                 {
-                    continue;
-                }
+                    if (a.equals(b))
+                    {
+                        continue;
+                    }
 
-                this.labelOccurrence.computeIfAbsent(a, k -> new ConcurrentHashMap<>())
-                        .computeIfAbsent(b, k -> new AtomicLong()).incrementAndGet();
+                    this.labelOccurrence.computeIfAbsent(a, k -> new ConcurrentHashMap<>())
+                            .computeIfAbsent(b, k -> new AtomicLong()).incrementAndGet();
+                }
             }
         }
 
