@@ -46,6 +46,10 @@ import net.nosial.bayesian_server.enums.Filters;
  * @param mml enable Multi-Model Language (per-language models) to reduce mistakes for dedicated languages (default: false)
  * @param mmlConfidenceThreshold detection confidence below which MML routes training and classification to the
  *                              {@code "und"} model (default: 0.35)
+ * @param mmlGlobalTraining whether MML also trains every document into the global {@code "und"} model so it can serve
+ *                          as a complete fallback (default: true)
+ * @param mmlMinLabelDocs minimum documents every label needs in a language-specific model before MML classifies
+ *                        with it instead of the global {@code "und"} model; 0 disables the check (default: 10)
  * @param maxDocs maximum number of documents the model is allowed to learn;
  *                0 = unlimited. When reached, the server rejects new training
  *                requests (default: 0)
@@ -91,6 +95,8 @@ public record ServerConfiguration(
         double lrDecayRate,
         boolean mml,
         double mmlConfidenceThreshold,
+        boolean mmlGlobalTraining,
+        long mmlMinLabelDocs,
         long maxDocs,
         boolean amEnabled,
         int amHistorySize,
@@ -146,6 +152,8 @@ public record ServerConfiguration(
         private double lrDecayRate = 0.001;
         private boolean mml = false;
         private double mmlConfidenceThreshold = 0.35;
+        private boolean mmlGlobalTraining = true;
+        private long mmlMinLabelDocs = 10;
         private long maxDocs = 0;
         private boolean amEnabled = true;
         private int amHistorySize = 10_000;
@@ -491,6 +499,33 @@ public record ServerConfiguration(
         }
 
         /**
+         * Sets whether MML also trains every document into the global {@code "und"} model.
+         *
+         * <p>Without this, the {@code "und"} fallback only sees documents whose language could not be
+         * detected, leaving it too sparse to classify anything reliably.
+         *
+         * @param v {@code true} to train the global model on every document; default {@code true}
+         */
+        public void mmlGlobalTraining(boolean v)
+        {
+            this.mmlGlobalTraining = v;
+        }
+
+        /**
+         * Sets the minimum number of documents every label needs in a language-specific model before
+         * MML classifies with it instead of the global {@code "und"} model.
+         *
+         * <p>A language model that has never seen a label can never predict it; one trained on a
+         * single label returns that label for every input.
+         *
+         * @param v the minimum per-label document count; {@code 0} disables the check; default 10
+         */
+        public void mmlMinLabelDocs(long v)
+        {
+            this.mmlMinLabelDocs = v;
+        }
+
+        /**
          * Sets the maximum number of documents the model is allowed to learn.
          *
          * <p>When this limit is reached the server rejects new training requests, behaving
@@ -600,7 +635,7 @@ public record ServerConfiguration(
                     this.requestReadTimeoutMillis, this.minTokenLength, this.maxTokenLength, this.cjkBigrams, this.memoryLimitMB, this.readOnly,
                     this.useLabelChain, this.priorWeight, this.useComplement, this.useTfIdf, this.useBm25, this.bm25K1,
                     this.bm25B, this.useOnlineLR, this.lrInitialLearningRate, this.lrDecayRate, this.mml,
-                    this.mmlConfidenceThreshold, this.maxDocs, this.amEnabled, this.amHistorySize, this.amCaptureRejected,
+                    this.mmlConfidenceThreshold, this.mmlGlobalTraining, this.mmlMinLabelDocs, this.maxDocs, this.amEnabled, this.amHistorySize, this.amCaptureRejected,
                     this.amCaptureClassification, this.filters, this.logLevel
             );
         }
@@ -715,6 +750,11 @@ public record ServerConfiguration(
             if (this.mmlConfidenceThreshold < 0.0 || this.mmlConfidenceThreshold > 1.0)
             {
                 throw new IllegalArgumentException("mmlConfidenceThreshold must be in [0, 1]");
+            }
+
+            if (this.mmlMinLabelDocs < 0)
+            {
+                throw new IllegalArgumentException("mmlMinLabelDocs must be >= 0");
             }
 
             if (this.maxDocs < 0)
