@@ -41,6 +41,8 @@ plug it in as a spam filter. Users submit examples of spam and not spam, and the
       * [`--prior-weight <n>`](#--prior-weight-n)
       * [`--mml <bool>`](#--mml-bool)
       * [`--mml-confidence-threshold <0..1>`](#--mml-confidence-threshold-01)
+      * [`--mml-global-training <bool>`](#--mml-global-training-bool)
+      * [`--mml-min-label-docs <n>`](#--mml-min-label-docs-n)
       * [`--max-docs <n>`](#--max-docs-n)
       * [`--am-enabled <bool>`](#--am-enabled-bool)
       * [`--am-history-size <n>`](#--am-history-size-n)
@@ -156,6 +158,8 @@ The server can be configured using command-line arguments, every option can also
 | `--prior-weight <n>`                 | `BS_PRIOR_WEIGHT`              | `1.0`            | Double (>=0)      | Prior weight multiplier                                         |
 | `--mml <bool>`                       | `BS_MML`                       | `false`          | Boolean           | Enable Multi-Model Language mode                                |
 | `--mml-confidence-threshold <0..1>`  | `BS_MML_CONFIDENCE_THRESHOLD`  | `0.35`           | Double (0-1)      | Detection confidence below which MML routes to "und" model      |
+| `--mml-global-training <bool>`       | `BS_MML_GLOBAL_TRAINING`       | `true`           | Boolean           | Also train every document into the global "und" model           |
+| `--mml-min-label-docs <n>`           | `BS_MML_MIN_LABEL_DOCS`        | `10`             | Long (>=0)        | Docs per label a language model needs before MML uses it        |
 | `--max-docs <n>`                     | `BS_MAX_DOCS`                  | `0`              | Long (>=0)        | Max documents the model may learn; 0 = unlimited                |
 | `--am-enabled <bool>`                | `BS_AM_ENABLED`                | `true`           | Boolean           | Enable analytical monitoring history                            |
 | `--am-history-size <n>`              | `BS_AM_HISTORY_SIZE`           | `10000`          | Integer (>=1)     | Max analytics entries to retain before eviction                 |
@@ -357,6 +361,26 @@ model based on the detection confidence:
 
 Default `0.35` is a conservative value that routes clearly ambiguous text to the pooled `"und"` model while keeping
 confident detections in their language-specific models.
+
+Note that Lingua's confidence values are relative: the most likely language always scores `1.0`, even for short text
+such as `"Lol"` (detected as Tswana). In practice, only text shorter than 3 characters or failed detections fall below
+this threshold, so short messages are routinely routed to the wrong language model. `--mml-global-training` and
+`--mml-min-label-docs` exist to keep such sparse models from deciding classifications.
+
+#### `--mml-global-training <bool>`
+
+When MML mode is enabled, also trains every document into the `"und"` model in addition to its language-specific model,
+turning `"und"` into a global model that has seen every label in every language. The `"und"` model is the fallback used
+by classification, so without this it only knows the few documents whose language could not be detected. Statistics and
+the `--max-docs` limit count each document once. A model built without this option should be rebuilt (for example from
+the `--archive` CSV) after enabling it. Enabled by default.
+
+#### `--mml-min-label-docs <n>`
+
+When MML mode is enabled, a language-specific model is only used for classification if every label known to it or to the
+`"und"` model has at least this many training documents in it. Otherwise the `"und"` model classifies the text instead.
+A language model that has never seen a label can never predict it, so a model trained only on `MALICIOUS` documents
+would return `MALICIOUS` with probability `1.0` for every input in that language. `0` disables the check. Default `10`.
 
 #### `--max-docs <n>`
 
