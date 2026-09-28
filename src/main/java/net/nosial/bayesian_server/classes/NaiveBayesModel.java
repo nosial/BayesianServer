@@ -257,6 +257,7 @@ public final class NaiveBayesModel
         // Build the Caffeine L1 cache. The CacheLoader handles L2 misses and the
         // eviction listener automatically persists to L2 when entries are evicted.
         this.tokenCountsCache = Caffeine.newBuilder()
+                .executor(Runnable::run)
                 .maximumWeight(Long.MAX_VALUE)
                 .weigher((String key, ConcurrentHashMap<String, AtomicLong> map) ->
                 {
