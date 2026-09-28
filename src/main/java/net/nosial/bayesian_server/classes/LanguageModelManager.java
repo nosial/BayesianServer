@@ -40,9 +40,14 @@ public final class LanguageModelManager
     private final double lrInitialLearningRate;
     private final double lrDecayRate;
 
+    /** The {@code "und"} model doubles as the global fallback model covering every language. */
+    public static final String GLOBAL_MODEL = "und";
+
     private volatile Path persistencePath;
     private volatile int memoryLimitMB;
     private volatile int knownModelCount;
+    private volatile boolean globalTraining;
+    private volatile long minLabelDocuments;
 
     private final AtomicLong saveVersion = new AtomicLong();
     private final Set<String> pendingLabels = ConcurrentHashMap.newKeySet();
@@ -151,7 +156,85 @@ public final class LanguageModelManager
      */
     public void train(String text, Collection<String> labels, String languageCode, Set<String> stopWords)
     {
+        train(text, labels, languageCode, stopWords, stopWords);
+    }
+
+    /**
+     * Incrementally trains the per-language model for the given language code on one document and,
+     * when global training is enabled, also trains the global {@code "und"} model on it.
+     *
+     * @param text The document text to learn from
+     * @param labels The labels that apply to this document (must be non-empty)
+     * @param languageCode The ISO 639-1 language code (e.g. {@code "en"}, {@code "de"})
+     * @param stopWords A set of lowercased tokens to discard for the language-specific model
+     * @param globalStopWords A set of lowercased tokens to discard for the global model
+     */
+    public void train(String text, Collection<String> labels, String languageCode, Set<String> stopWords, Set<String> globalStopWords)
+    {
         getOrCreate(languageCode).train(text, labels, stopWords);
+
+        if (this.globalTraining && !GLOBAL_MODEL.equals(languageCode))
+        {
+            getOrCreate(GLOBAL_MODEL).train(text, labels, globalStopWords);
+        }
+    }
+
+    /**
+     * Sets whether every document is also trained into the global {@code "und"} model, so that
+     * classification has a fallback that has seen every label regardless of language.
+     *
+     * @param globalTraining {@code true} to train the global model on every document
+     */
+    public void setGlobalTraining(boolean globalTraining)
+    {
+        this.globalTraining = globalTraining;
+    }
+
+    /**
+     * Sets the minimum number of training documents every label must have in a language-specific
+     * model before that model is trusted for classification. Models below this are skipped in favor
+     * of the global {@code "und"} model.
+     *
+     * @param minLabelDocuments The minimum per-label document count; {@code 0} disables the check
+     */
+    public void setMinLabelDocuments(long minLabelDocuments)
+    {
+        this.minLabelDocuments = minLabelDocuments;
+    }
+
+    /**
+     * Checks whether a language-specific model knows every label of the global model with at least
+     * the configured minimum number of documents each. A model missing a label can never predict it,
+     * so a model trained on a single label would otherwise return that label for every input.
+     *
+     * @param langModel The language-specific model
+     * @param globalModel The global model providing the reference label set
+     * @return {@code true} if the language model is trustworthy for classification
+     */
+    private boolean isComplete(NaiveBayesModel langModel, NaiveBayesModel globalModel)
+    {
+        if (this.minLabelDocuments <= 0)
+        {
+            return true;
+        }
+
+        Map<String, Long> counts = langModel.snapshotLabelDocumentCounts();
+        if (counts.isEmpty())
+        {
+            return false;
+        }
+
+        Set<String> labels = new LinkedHashSet<>(counts.keySet());
+        labels.addAll(globalModel.snapshotLabelDocumentCounts().keySet());
+        for (String label : labels)
+        {
+            if (counts.getOrDefault(label, 0L) < this.minLabelDocuments)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**
@@ -178,7 +261,8 @@ public final class LanguageModelManager
      *
      * <p>High confidence ({@code >= 0.95}) uses only the language-specific model. Low confidence
      * ({@code <= 0.05}) uses only the {@code "und"} model. Between those bounds, the per-label
-     * probabilities and posteriors are linearly interpolated.
+     * probabilities and posteriors are linearly interpolated. A language-specific model that does not
+     * have every label with at least the configured minimum document count is ignored entirely.
      *
      * @param text The document text to classify
      * @param topK Maximum number of ranked labels to return ({@code <= 0} returns all)
@@ -191,10 +275,10 @@ public final class LanguageModelManager
     public ClassificationResult classify(String text, int topK, double threshold, String languageCode, double confidence, Set<String> stopWords)
     {
         NaiveBayesModel langModel = this.models.get(languageCode);
-        NaiveBayesModel undModel = getOrCreate("und");
+        NaiveBayesModel undModel = getOrCreate(GLOBAL_MODEL);
 
-        // If no language-specific model exists, always fall back to und.
-        if (langModel == null)
+        // If no language-specific model exists, or it is too sparse to be trusted, fall back to und.
+        if (langModel == null || langModel == undModel || !isComplete(langModel, undModel))
         {
             return undModel.classify(text, topK, threshold, stopWords);
         }
@@ -369,10 +453,19 @@ public final class LanguageModelManager
     /**
      * Returns the total number of documents trained across all per-language models.
      *
-     * @return The sum of all document counts
+     * <p>With global training enabled the global model already holds every document, so its count
+     * is returned instead of the sum, which would count each document twice.
+     *
+     * @return The number of trained documents
      */
     public long totalDocumentCount()
     {
+        if (this.globalTraining)
+        {
+            NaiveBayesModel globalModel = models.get(GLOBAL_MODEL);
+            return globalModel == null ? 0 : globalModel.totalDocumentCount();
+        }
+
         long total = 0;
         for (NaiveBayesModel model : models.values())
         {
@@ -555,6 +648,9 @@ public final class LanguageModelManager
      * count descending. Scoring configuration values (smoothing alpha, BM25 parameters, LR
      * parameters) come from the manager's own configuration, which is identical across models.
      *
+     * <p>With global training enabled the global model already covers every document, so only its
+     * statistics are reported to avoid counting each document twice.
+     *
      * @return A {@link ModelStatistics} snapshot aggregating all per-language models
      */
     public ModelStatistics statistics()
@@ -565,9 +661,15 @@ public final class LanguageModelManager
         long totalTokens = 0;
         long totalDocTokens = 0;
 
-        for (Map.Entry<String, NaiveBayesModel> entry : models.entrySet())
+        Collection<NaiveBayesModel> sources = models.values();
+        if (this.globalTraining)
         {
-            NaiveBayesModel model = entry.getValue();
+            NaiveBayesModel globalModel = models.get(GLOBAL_MODEL);
+            sources = globalModel == null ? List.of() : List.of(globalModel);
+        }
+
+        for (NaiveBayesModel model : sources)
+        {
             ModelStatistics stats = model.statistics();
             totalDocs += stats.totalDocuments();
             vocabSize += stats.vocabularySize();
