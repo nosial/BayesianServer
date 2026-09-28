@@ -34,6 +34,16 @@ class ServerConfigurationTest
         assertEquals(0, config.memoryLimitMB());
         assertFalse(config.readOnly());
         assertTrue(config.filters().isEmpty());
+        assertTrue(config.mmlGlobalTraining());
+        assertEquals(10, config.mmlMinLabelDocs());
+    }
+
+    @Test
+    void shouldRejectNegativeMmlMinLabelDocs()
+    {
+        ServerConfiguration.Builder builder = ServerConfiguration.builder();
+        builder.mmlMinLabelDocs(-1);
+        assertThrows(IllegalArgumentException.class, builder::build);
     }
 
     @Test

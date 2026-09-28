@@ -179,4 +179,75 @@ class LanguageModelManagerTest
         NaiveBayesModel model = manager.getModel("en");
         assertEquals(0, manager.languageModelCount());
     }
+
+    @Test
+    void shouldAlsoTrainGlobalModelWhenGlobalTrainingEnabled()
+    {
+        LanguageModelManager manager = newManager();
+        manager.setGlobalTraining(true);
+        manager.train("fox dog rabbit", List.of("animals"), "en", Set.of(), Set.of());
+        manager.train("auto bus zug", List.of("fahrzeuge"), "de", Set.of(), Set.of());
+        manager.train("undetected text", List.of("animals"), LanguageModelManager.GLOBAL_MODEL, Set.of(), Set.of());
+
+        NaiveBayesModel global = manager.getModel(LanguageModelManager.GLOBAL_MODEL);
+        assertEquals(3, global.totalDocumentCount());
+        assertTrue(global.labelNames().containsAll(List.of("animals", "fahrzeuge")));
+        assertEquals(1, manager.getModel("en").totalDocumentCount());
+        assertEquals(1, manager.getModel("de").totalDocumentCount());
+    }
+
+    @Test
+    void shouldCountEachDocumentOnceWithGlobalTraining()
+    {
+        LanguageModelManager manager = newManager();
+        manager.setGlobalTraining(true);
+        manager.train("fox dog rabbit", List.of("animals"), "en", Set.of(), Set.of());
+        manager.train("auto bus zug", List.of("fahrzeuge"), "de", Set.of(), Set.of());
+
+        assertEquals(2, manager.totalDocumentCount());
+        ModelStatistics stats = manager.statistics();
+        assertEquals(2, stats.totalDocuments());
+        assertEquals(2, stats.labelCount());
+    }
+
+    @Test
+    void shouldFallBackToGlobalModelWhenLanguageModelLacksLabels()
+    {
+        LanguageModelManager manager = newManager();
+        manager.setGlobalTraining(true);
+        manager.setMinLabelDocuments(3);
+        for (int i = 0; i < 5; i++)
+        {
+            manager.train("hello friend how are you today " + i, List.of("NORMAL"), "en", Set.of(), Set.of());
+            manager.train("buy cheap usdt exchange now " + i, List.of("MALICIOUS"), "en", Set.of(), Set.of());
+        }
+        // The Hindi model only ever sees MALICIOUS, so on its own it can only answer MALICIOUS
+        manager.train("usdt exchange bharat", List.of("MALICIOUS"), "hi", Set.of(), Set.of());
+
+        ClassificationResult result = manager.classify("hello friend", 0, 0.5, "hi", 1.0, Set.of());
+        assertEquals("NORMAL", result.topLabel());
+        assertEquals(2, result.labels().size());
+    }
+
+    @Test
+    void shouldTreatLanguageModelMissingGlobalLabelAsIncomplete()
+    {
+        LanguageModelManager manager = newManager();
+        manager.setGlobalTraining(true);
+        manager.setMinLabelDocuments(3);
+        for (int i = 0; i < 3; i++)
+        {
+            manager.train("fox dog rabbit " + i, List.of("animals"), "en", Set.of(), Set.of());
+            manager.train("car bus train " + i, List.of("vehicles"), "en", Set.of(), Set.of());
+        }
+        // Label only known to the global model, so the English model is incomplete for it
+        manager.train("auto zug", List.of("fahrzeuge"), "de", Set.of(), Set.of());
+        ClassificationResult incomplete = manager.classify("fox dog", 0, 0.5, "en", 1.0, Set.of());
+        assertEquals(3, incomplete.labels().size());
+
+        manager.setMinLabelDocuments(0);
+        ClassificationResult trusted = manager.classify("fox dog", 0, 0.5, "en", 1.0, Set.of());
+        assertEquals(2, trusted.labels().size());
+        assertEquals("animals", trusted.topLabel());
+    }
 }

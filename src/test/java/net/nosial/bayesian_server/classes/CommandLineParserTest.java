@@ -38,6 +38,16 @@ class CommandLineParserTest
     }
 
     @Test
+    void shouldParseMmlFallbackOptions()
+    {
+        ServerConfiguration config = Program.CommandLineParser.parse(new String[]{
+                "--mml-global-training", "false", "--mml-min-label-docs", "25"}
+        );
+        assertFalse(config.mmlGlobalTraining());
+        assertEquals(25, config.mmlMinLabelDocs());
+    }
+
+    @Test
     void shouldParseHumanReadableFileSizes()
     {
         ServerConfiguration config = Program.CommandLineParser.parse(new String[]{"--max-request-size", "4MB"});
