@@ -331,7 +331,7 @@ public final class LearningQueue implements AutoCloseable
 
                 if (this.languageModelManager != null)
                 {
-                    this.languageModelManager.train(text, task.labels(), effectiveLang, filtered);
+                    this.languageModelManager.train(text, task.labels(), effectiveLang, filtered, this.stopWords.universal());
                 }
                 else
                 {
