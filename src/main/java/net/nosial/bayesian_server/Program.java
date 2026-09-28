@@ -173,6 +173,8 @@ public final class Program
             consume(options, "lr-decay", v -> builder.lrDecayRate(Utilities.parseDouble("lr-decay", v)));
             consume(options, "mml", v -> builder.mml(Utilities.parseBoolean("mml", v)));
             consume(options, "mml-confidence-threshold", v -> builder.mmlConfidenceThreshold(Utilities.parseDouble("mml-confidence-threshold", v)));
+            consume(options, "mml-global-training", v -> builder.mmlGlobalTraining(Utilities.parseBoolean("mml-global-training", v)));
+            consume(options, "mml-min-label-docs", v -> builder.mmlMinLabelDocs(Utilities.parseLong("mml-min-label-docs", v)));
             consume(options, "max-docs", v -> builder.maxDocs(Utilities.parseLong("max-docs", v)));
             consume(options, "am-enabled", v -> builder.amEnabled(Utilities.parseBoolean("am-enabled", v)));
             consume(options, "am-history-size", v -> builder.amHistorySize(Utilities.parseInt("am-history-size", v)));
@@ -360,6 +362,12 @@ public final class Program
                                                       Detection confidence below which MML routes to
                                                       the "und" model; lower = more conservative
                                                       (default: 0.35)
+                      --mml-global-training <true|false>
+                                                      Also train every document into the global
+                                                      "und" fallback model (default: true)
+                      --mml-min-label-docs <n>        Documents every label needs in a language
+                                                      model before MML uses it instead of "und";
+                                                      0 = always use it (default: 10)
                       --max-docs <n>                  Maximum documents the model may learn; 0 =
                                                       unlimited. When reached, training is rejected
                                                       (read-only for learning) (default: 0)
