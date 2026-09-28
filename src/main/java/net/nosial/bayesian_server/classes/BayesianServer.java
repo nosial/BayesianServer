@@ -52,6 +52,8 @@ public final class BayesianServer implements AutoCloseable
                     config.useLabelChain(), config.priorWeight(), config.useComplement(), config.useTfIdf(),
                     config.useBm25(), config.bm25K1(), config.bm25B(),
                     config.useOnlineLR(), config.lrInitialLearningRate(), config.lrDecayRate());
+            this.languageModelManager.setGlobalTraining(config.mmlGlobalTraining());
+            this.languageModelManager.setMinLabelDocuments(config.mmlMinLabelDocs());
             this.model = null;
             this.store = null;
             this.learningQueue = new LearningQueue(this.languageModelManager, config.learnerThreads(), config.learnQueueCapacity(), stopWords,
