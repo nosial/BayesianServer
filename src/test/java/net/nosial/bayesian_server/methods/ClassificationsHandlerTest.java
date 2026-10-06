@@ -7,7 +7,10 @@ import net.nosial.bayesian_server.records.ApiResponse;
 import net.nosial.bayesian_server.records.ServerConfiguration;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 
@@ -34,6 +37,26 @@ class ClassificationsHandlerTest
     private ClassificationHandler createHandler()
     {
         return new ClassificationHandler(createTrainedModel(), defaultConfig(), new LanguageDetection(), new StopWordRegistry());
+    }
+
+    @Test
+    void shouldAppendClassificationsToDatalog(@TempDir Path dir) throws Exception
+    {
+        Path datalog = dir.resolve("datalog.csv");
+        ClassificationHandler handler = createHandler();
+        try (CsvLogWriter writer = new CsvLogWriter(datalog, "labels,content", 100, "test-datalog"))
+        {
+            handler.setDatalog(writer);
+            handler.handle(new ApiRequest("POST", "/", Map.of(), "{\"text\":\"buy cheap pills\"}".getBytes()));
+            handler.handle(new ApiRequest("POST", "/", Map.of(), "{\"text\":\"meeting, \\\"tomorrow\\\"\"}".getBytes()));
+        }
+
+        List<String> lines = Files.readAllLines(datalog);
+        assertEquals(3, lines.size());
+        assertEquals("labels,content", lines.get(0));
+        assertTrue(lines.get(1).endsWith(",buy cheap pills"), lines.get(1));
+        assertTrue(lines.get(1).contains("spam"), lines.get(1));
+        assertTrue(lines.get(2).endsWith(",\"meeting, \"\"tomorrow\"\"\""), lines.get(2));
     }
 
     @Test

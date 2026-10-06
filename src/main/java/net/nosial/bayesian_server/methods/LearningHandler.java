@@ -1,6 +1,8 @@
 package net.nosial.bayesian_server.methods;
 
+import net.nosial.bayesian_server.classes.CsvLogWriter;
 import net.nosial.bayesian_server.classes.LearningQueue;
+import net.nosial.bayesian_server.classes.Utilities;
 import net.nosial.bayesian_server.interfaces.ApiHandlerInterface;
 import net.nosial.bayesian_server.records.TrainingTask;
 import net.nosial.bayesian_server.exceptions.ApiException;
@@ -8,14 +10,6 @@ import net.nosial.bayesian_server.records.ApiRequest;
 import net.nosial.bayesian_server.records.ApiResponse;
 import net.nosial.bayesian_server.records.LearningQueueStatus;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -26,11 +20,9 @@ import net.nosial.bayesian_server.classes.NaiveBayesModel;
 public final class LearningHandler implements ApiHandlerInterface
 {
 
-    private static final Logger LOGGER = LoggerFactory.getLogger(LearningHandler.class);
-
     private final LearningQueue learningQueue;
     private final boolean readOnly;
-    private final Path archivePath;
+    private final CsvLogWriter archive;
 
     /**
      * LearningHandler Constructor
@@ -48,13 +40,13 @@ public final class LearningHandler implements ApiHandlerInterface
      *
      * @param learningQueue The learning queue for submitting training tasks
      * @param readOnly Whether the server is in read-only mode
-     * @param archivePath Optional path to a CSV file for archiving training data
+     * @param archive Optional CSV writer for archiving training data, or {@code null} to disable archiving
      */
-    public LearningHandler(LearningQueue learningQueue, boolean readOnly, Path archivePath)
+    public LearningHandler(LearningQueue learningQueue, boolean readOnly, CsvLogWriter archive)
     {
         this.learningQueue = learningQueue;
         this.readOnly = readOnly;
-        this.archivePath = archivePath;
+        this.archive = archive;
     }
 
     @Override
@@ -72,7 +64,7 @@ public final class LearningHandler implements ApiHandlerInterface
             throw ApiException.badRequest("provide a 'text' with 'label'/'labels', or a 'documents' array");
         }
 
-        if (this.archivePath != null)
+        if (this.archive != null)
         {
             this.appendToArchive(tasks);
         }
@@ -233,52 +225,16 @@ public final class LearningHandler implements ApiHandlerInterface
     record LearnResponse(boolean accepted, int submitted, int rejected, int pending, long currentDocs, long maxDocs, long rejectedMaxDocs) { }
 
     /**
-     * Appends the given training tasks to the CSV archive file. Creates the file with a header row if it does not exist.
+     * Queues the given training tasks for appending to the CSV archive. The write happens on the archive's
+     * background thread.
      *
      *  @param tasks The training task to append to the archive.
      */
     private void appendToArchive(List<TrainingTask> tasks)
     {
-        try
+        for (TrainingTask task : tasks)
         {
-            boolean exists = Files.exists(this.archivePath);
-            if (!exists)
-            {
-                Files.writeString(this.archivePath, "labels,content\n", StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
-            }
-
-            List<String> rows = new ArrayList<>(tasks.size());
-            for (TrainingTask task : tasks)
-            {
-                String labels = String.join(";", task.labels());
-                String content = task.text();
-                rows.add(escapeCsv(labels) + "," + escapeCsv(content));
-            }
-
-            Files.write(this.archivePath, rows, StandardCharsets.UTF_8, StandardOpenOption.APPEND);
+            this.archive.offer(Utilities.escapeCsv(String.join(";", task.labels())) + "," + Utilities.escapeCsv(task.text()));
         }
-        catch (IOException e)
-        {
-            LOGGER.warn("Failed to write to training archive {}", this.archivePath, e);
-        }
-    }
-
-    /**
-     * Escapes a value for CSV: wraps in quotes if it contains a comma, double-quote, or newline,
-     * and doubles any embedded double-quote characters.
-     */
-    private static String escapeCsv(String value)
-    {
-        if (value == null)
-        {
-            return "";
-        }
-
-        if (value.indexOf(',') >= 0 || value.indexOf('"') >= 0 || value.indexOf('\n') >= 0 || value.indexOf('\r') >= 0)
-        {
-            return "\"" + value.replace("\"", "\"\"") + "\"";
-        }
-
-        return value;
     }
 }

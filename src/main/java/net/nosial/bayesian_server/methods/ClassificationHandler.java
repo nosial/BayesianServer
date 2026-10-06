@@ -1,6 +1,7 @@
 package net.nosial.bayesian_server.methods;
 
 import net.nosial.bayesian_server.classes.AnalyticalMonitoring;
+import net.nosial.bayesian_server.classes.CsvLogWriter;
 import net.nosial.bayesian_server.enums.Filters;
 import net.nosial.bayesian_server.interfaces.ApiHandlerInterface;
 import net.nosial.bayesian_server.records.ServerConfiguration;
@@ -9,6 +10,7 @@ import net.nosial.bayesian_server.classes.LanguageModelManager;
 import net.nosial.bayesian_server.classes.NaiveBayesModel;
 import net.nosial.bayesian_server.classes.LanguageDetection;
 import net.nosial.bayesian_server.classes.StopWordRegistry;
+import net.nosial.bayesian_server.classes.Utilities;
 import net.nosial.bayesian_server.exceptions.ApiException;
 import net.nosial.bayesian_server.records.ApiRequest;
 import net.nosial.bayesian_server.records.ApiResponse;
@@ -26,6 +28,7 @@ public final class ClassificationHandler implements ApiHandlerInterface {
     private final LanguageDetection languageDetection;
     private final StopWordRegistry stopWords;
     private volatile AnalyticalMonitoring monitoring;
+    private volatile CsvLogWriter datalog;
 
     /**
      * ClassificationHandler Constructor (non-MML mode)
@@ -71,6 +74,16 @@ public final class ClassificationHandler implements ApiHandlerInterface {
     public void setAnalyticalMonitoring(AnalyticalMonitoring monitoring)
     {
         this.monitoring = monitoring;
+    }
+
+    /**
+     * Attaches a CSV writer that logs every classified document with its predicted labels.
+     *
+     * @param datalog The data log writer, or null to disable
+     */
+    public void setDatalog(CsvLogWriter datalog)
+    {
+        this.datalog = datalog;
     }
 
     @Override
@@ -121,6 +134,12 @@ public final class ClassificationHandler implements ApiHandlerInterface {
             mon.recordClassification(System.currentTimeMillis(), detectedLang, result.totalTokens(), detection.confidence(),
                     processingTimeMs, result.modelVersion(), body.text().length()
             );
+        }
+
+        CsvLogWriter log = this.datalog;
+        if (log != null)
+        {
+            log.offer(Utilities.escapeCsv(String.join(";", result.predictedLabels())) + "," + Utilities.escapeCsv(body.text()));
         }
 
         return ApiResponse.ok(response);

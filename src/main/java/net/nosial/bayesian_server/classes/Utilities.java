@@ -501,4 +501,26 @@ public final class Utilities
 
         return result;
     }
+
+    /**
+     * Escapes a value for CSV: wraps in quotes if it contains a comma, double-quote, or newline,
+     * and doubles any embedded double-quote characters.
+     *
+     * @param value the value to escape; {@code null} becomes an empty string
+     * @return the escaped value
+     */
+    public static String escapeCsv(String value)
+    {
+        if (value == null)
+        {
+            return "";
+        }
+
+        if (value.indexOf(',') >= 0 || value.indexOf('"') >= 0 || value.indexOf('\n') >= 0 || value.indexOf('\r') >= 0)
+        {
+            return "\"" + value.replace("\"", "\"\"") + "\"";
+        }
+
+        return value;
+    }
 }

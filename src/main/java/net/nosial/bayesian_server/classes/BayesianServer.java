@@ -26,6 +26,8 @@ public final class BayesianServer implements AutoCloseable
     private final LearningQueue learningQueue;
     private final Scheduler scheduler;
     private final HttpApiServer httpServer;
+    private final CsvLogWriter archive;
+    private final CsvLogWriter datalog;
     private final CountDownLatch shutdownLatch = new CountDownLatch(1);
     private final AtomicBoolean closed = new AtomicBoolean(false);
 
@@ -44,6 +46,10 @@ public final class BayesianServer implements AutoCloseable
                 config.amEnabled(), config.amHistorySize(), config.amCaptureRejected(), config.amCaptureClassification());
 
         this.config = config;
+        this.archive = config.archivePath() == null ? null
+                : new CsvLogWriter(config.archivePath(), "labels,content", CsvLogWriter.DEFAULT_CAPACITY, "archive-writer");
+        this.datalog = config.datalogPath() == null ? null
+                : new CsvLogWriter(config.datalogPath(), "labels,content", CsvLogWriter.DEFAULT_CAPACITY, "datalog-writer");
 
         if (config.mml())
         {
@@ -63,10 +69,11 @@ public final class BayesianServer implements AutoCloseable
             this.scheduler = new Scheduler(this.languageModelManager, config.modelPath(), config.saveIntervalSeconds());
             ClassificationHandler classificationHandler = new ClassificationHandler(this.languageModelManager, config, languageDetection, stopWords);
             classificationHandler.setAnalyticalMonitoring(monitoring);
+            classificationHandler.setDatalog(this.datalog);
             HttpRouter httpRouter = new HttpRouter()
                     .register("GET", "/", new ModelInformation(this.languageModelManager, this.learningQueue, config, startMillis))
                     .register("POST", "/", classificationHandler)
-                    .register("PUSH", "/", new LearningHandler(this.learningQueue, config.readOnly(), config.archivePath()))
+                    .register("PUSH", "/", new LearningHandler(this.learningQueue, config.readOnly(), this.archive))
                     .register("GET", "/health", new HealthHandler())
                     .register("GET", "/analytics", new AnalyticsHandler(monitoring))
                     .register("POST", "/analytics", new AnalyticsHandler(monitoring));
@@ -87,10 +94,11 @@ public final class BayesianServer implements AutoCloseable
             this.scheduler = new Scheduler(this.model, this.store, config.saveIntervalSeconds());
             ClassificationHandler classificationHandler = new ClassificationHandler(this.model, config, languageDetection, stopWords);
             classificationHandler.setAnalyticalMonitoring(monitoring);
+            classificationHandler.setDatalog(this.datalog);
             HttpRouter httpRouter = new HttpRouter()
                     .register("GET", "/", new ModelInformation(this.model, this.learningQueue, config, startMillis))
                     .register("POST", "/", classificationHandler)
-                    .register("PUSH", "/", new LearningHandler(this.learningQueue, config.readOnly(), config.archivePath()))
+                    .register("PUSH", "/", new LearningHandler(this.learningQueue, config.readOnly(), this.archive))
                     .register("GET", "/health", new HealthHandler())
                     .register("GET", "/analytics", new AnalyticsHandler(monitoring))
                     .register("POST", "/analytics", new AnalyticsHandler(monitoring));
@@ -244,7 +252,30 @@ public final class BayesianServer implements AutoCloseable
             }
         }
 
+        // After the HTTP server is closed no more rows arrive, so closing now writes out everything still queued
+        closeLog(this.archive);
+        closeLog(this.datalog);
+
         LOGGER.info("BayesianServer stopped cleanly");
         this.shutdownLatch.countDown();
+    }
+
+    /**
+     * Closes a CSV log writer, flushing any queued rows, and logs how many rows were dropped.
+     *
+     * @param log the writer to close, may be {@code null}
+     */
+    private static void closeLog(CsvLogWriter log)
+    {
+        if (log == null)
+        {
+            return;
+        }
+
+        log.close();
+        if (log.droppedCount() > 0)
+        {
+            LOGGER.warn("{} rows were dropped from a CSV log because the disk could not keep up", log.droppedCount());
+        }
     }
 }

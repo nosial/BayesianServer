@@ -143,6 +143,7 @@ public final class Program
 
             consume(options, "model", v -> builder.modelPath(Path.of(v)));
             consume(options, "archive", v -> builder.archivePath(Path.of(v)));
+            consume(options, "datalog", v -> builder.datalogPath(Path.of(v)));
             consume(options, "host", builder::host);
             consume(options, "port", v -> builder.port(Utilities.parseInt("port", v)));
             consume(options, "backlog", v -> builder.backlog(Utilities.parseInt("backlog", v)));
@@ -318,6 +319,9 @@ public final class Program
                                                      (default: bayesian-model)
                       --archive <path>               Path to a CSV file to archive every training
                                                      request (labels,content columns)
+                      --datalog <path>               Path to a CSV file to log every classification
+                                                     request (labels,content columns; labels are the
+                                                     predicted labels)
                       --host <addr>                  Bind address (default: 0.0.0.0)
                       --port <n>                     Bind port (default: 8080)
                       --backlog <n>                  Accept backlog (default: 1024)
