@@ -16,6 +16,7 @@ plug it in as a spam filter. Users submit examples of spam and not spam, and the
   * [Configuration](#configuration)
       * [`--model <path>`](#--model-path)
       * [`--archive <path>`](#--archive-path)
+      * [`--datalog <path>`](#--datalog-path)
       * [`--smoothing <alpha>`](#--smoothing-alpha)
       * [`--memory-limit <MB>`](#--memory-limit-mb)
       * [`--save-interval <sec>`](#--save-interval-sec)
@@ -128,6 +129,7 @@ The server can be configured using command-line arguments, every option can also
 |--------------------------------------|--------------------------------|------------------|-------------------|-----------------------------------------------------------------|
 | `--model <path>`                     | `BS_MODEL`                     | `bayesian-model` | Path              | Model directory for persistence                                 |
 | `--archive <path>`                   | `BS_ARCHIVE`                   | none             | Path              | Path to a CSV file for archiving training requests              |
+| `--datalog <path>`                   | `BS_DATALOG`                   | none             | Path              | Path to a CSV file for logging classification requests          |
 | `--host <addr>`                      | `BS_HOST`                      | `0.0.0.0`        | Address           | Bind address                                                    |
 | `--port <n>`                         | `BS_PORT`                      | `8080`           | Integer (1-65535) | Bind port                                                       |
 | `--backlog <n>`                      | `BS_BACKLOG`                   | `1024`           | Integer           | TCP accept backlog                                              |
@@ -181,6 +183,23 @@ archive are logged as warnings but do not affect request processing — the trai
 archive write fails.
 
 This is useful for auditing, debugging misclassifications, or replaying training data during migration.
+
+#### `--datalog <path>`
+
+When set, every document submitted to the `POST /` classification endpoint is appended as a row to the specified CSV
+file. The file uses the same format as [`--archive`](#--archive-path) (`labels,content`), where `labels` holds the
+predicted labels (semicolon-separated, empty when no label met the threshold) and `content` holds the original,
+unfiltered text. I/O errors while writing to the data log are logged as warnings and do not affect the classification
+response.
+
+Rows are written by a background thread, so requests never wait on the disk. Up to 10,000 rows are buffered in memory;
+if the disk cannot keep up and the buffer fills, further rows are dropped (with a warning at most once a minute) instead
+of slowing down classification. Queued rows are written out when the server shuts down cleanly. `--archive` is written
+the same way.
+
+Because the format matches the archive, a reviewed and relabeled data log can be cleaned and replayed with
+`scripts/rebuild_from_archive.py`. Note that the data log contains every classified document verbatim and grows without
+bound, so plan for its size and for the sensitivity of the content it stores.
 
 #### `--smoothing <alpha>`
 
