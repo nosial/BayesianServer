@@ -15,6 +15,8 @@ import net.nosial.bayesian_server.enums.Filters;
  * @param modelPath filesystem path the model is loaded from and periodically saved to
  * @param archivePath optional filesystem path for the training archive CSV;
  *                    when set, each training request is appended as a CSV row
+ * @param datalogPath optional filesystem path for the classification data log CSV;
+ *                    when set, each classification request is appended as a CSV row
  * @param host bind address for the HTTP listener
  * @param port bind port for the HTTP listener
  * @param backlog server socket accept backlog
@@ -65,6 +67,7 @@ import net.nosial.bayesian_server.enums.Filters;
 public record ServerConfiguration(
         Path modelPath,
         Path archivePath,
+        Path datalogPath,
         String host,
         int port,
         int backlog,
@@ -162,6 +165,7 @@ public record ServerConfiguration(
         private List<Filters> filters = List.of();
         private String logLevel = "INFO";
         private Path archivePath = null;
+        private Path datalogPath = null;
 
         /**
          * Sets the filesystem path the model is loaded from and saved to.
@@ -620,6 +624,16 @@ public record ServerConfiguration(
         }
 
         /**
+         * Sets the optional filesystem path for the classification data log CSV.
+         *
+         * @param v the data log file path, or {@code null} to disable the data log
+         */
+        public void datalogPath(Path v)
+        {
+            this.datalogPath = v;
+        }
+
+        /**
          * Validates builder state and returns an immutable {@link ServerConfiguration}.
          *
          * @return A new {@link ServerConfiguration} with all values from this builder
@@ -629,7 +643,7 @@ public record ServerConfiguration(
         {
             this.validate();
             return new ServerConfiguration(
-                    this.modelPath, this.archivePath, this.host, this.port, this.backlog, this.saveIntervalSeconds,
+                    this.modelPath, this.archivePath, this.datalogPath, this.host, this.port, this.backlog, this.saveIntervalSeconds,
                     this.smoothingAlpha, this.classificationThreshold, this.normalizeDocumentLength, this.learnerThreads,
                     this.learnQueueCapacity, this.httpWorkerThreads, this.serviceThreads, this.maxRequestBytes,
                     this.requestReadTimeoutMillis, this.minTokenLength, this.maxTokenLength, this.cjkBigrams, this.memoryLimitMB, this.readOnly,
