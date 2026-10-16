@@ -6,7 +6,7 @@
 
     <groupId>net.nosial</groupId>
     <artifactId>bayesian_server</artifactId>
-    <version>1.0.3</version>
+    <version>2.0.0</version>
     <packaging>jar</packaging>
 
     <name>BayesianServer</name>
@@ -20,13 +20,15 @@
         <main.class>net.nosial.bayesian_server.Program</main.class>
 
         <!-- Dependency versions (pinned for reproducible builds) -->
-        <netty.version>4.2.15.Final</netty.version>
-        <jackson.version>2.21.4</jackson.version>
+        <netty.version>4.2.19.Final</netty.version>
+        <jackson.version>3.2.3</jackson.version>
         <slf4j.version>2.0.15</slf4j.version>
-        <logback.version>1.5.34</logback.version>
+        <logback.version>1.6.5</logback.version>
         <junit.version>5.10.2</junit.version>
         <caffeine.version>3.2.0</caffeine.version>
         <lingua.version>1.2.2</lingua.version>
+        <onnxruntime.version>1.31.0</onnxruntime.version>
+        <djl.tokenizers.version>0.38.0</djl.tokenizers.version>
 
         <!-- Plugin versions -->
         <compiler.plugin.version>3.13.0</compiler.plugin.version>
@@ -45,7 +47,7 @@
                 <scope>import</scope>
             </dependency>
             <dependency>
-                <groupId>com.fasterxml.jackson</groupId>
+                <groupId>tools.jackson</groupId>
                 <artifactId>jackson-bom</artifactId>
                 <version>${jackson.version}</version>
                 <type>pom</type>
@@ -74,7 +76,7 @@
 
         <!-- JSON serialization -->
         <dependency>
-            <groupId>com.fasterxml.jackson.core</groupId>
+            <groupId>tools.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>
         </dependency>
 
@@ -102,6 +104,19 @@
             <groupId>com.github.pemistahl</groupId>
             <artifactId>lingua</artifactId>
             <version>${lingua.version}</version>
+        </dependency>
+
+        <!-- Sentence embeddings (optional, the embedding-model option): ONNX Runtime runs the model, the HuggingFace
+             tokenizer prepares its input -->
+        <dependency>
+            <groupId>com.microsoft.onnxruntime</groupId>
+            <artifactId>onnxruntime</artifactId>
+            <version>${onnxruntime.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ai.djl.huggingface</groupId>
+            <artifactId>tokenizers</artifactId>
+            <version>${djl.tokenizers.version}</version>
         </dependency>
 
         <!-- Testing -->
