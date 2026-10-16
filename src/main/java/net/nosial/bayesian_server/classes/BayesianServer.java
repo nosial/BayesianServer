@@ -412,6 +412,12 @@ public final class BayesianServer implements AutoCloseable
             LOGGER.error("Error while closing the HTTP server", e);
         }
 
+        // Before the learning queue closes: no more due texts are submitted, and the pending ones are saved
+        if (this.implicitLearner != null)
+        {
+            this.implicitLearner.close();
+        }
+
         if (!this.config.readOnly())
         {
             try
@@ -431,6 +437,16 @@ public final class BayesianServer implements AutoCloseable
             {
                 LOGGER.error("Error while closing the Scheduler", e);
             }
+        }
+
+        if (this.logisticModel != null)
+        {
+            this.logisticModel.close();
+        }
+
+        if (this.embeddingModel != null)
+        {
+            this.embeddingModel.close();
         }
 
         // After the HTTP server is closed no more rows arrive, so closing now writes out everything still queued
