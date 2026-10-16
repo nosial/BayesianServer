@@ -358,10 +358,26 @@ public final class BayesianServer implements AutoCloseable
     }
 
     /**
-     * Returns the bounded port of the HTTP server of the BayesianServer instance
+     * Loads the training ledger, warning when the model holds documents the ledger does not know, as those can
+     * not be corrected exactly.
      *
-     * @return The bounded port number
+     * @param modelDocuments the number of documents the loaded model holds
+     * @throws IOException if the ledger file exists but cannot be read
      */
+    private void loadLedger(long modelDocuments) throws IOException
+    {
+        if (this.ledger == null)
+        {
+            return;
+        }
+
+        if (!this.ledger.load(this.ledgerFile) && modelDocuments > 0)
+        {
+            LOGGER.warn("The model holds {} documents learned without a training ledger, correcting them only learns "
+                    + "the corrected labels. Rebuild the model from the archive to make them correctable", modelDocuments);
+        }
+    }
+
     public int boundPort()
     {
         return this.httpServer.boundPort();
