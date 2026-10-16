@@ -211,6 +211,30 @@ public final class BayesianServer implements AutoCloseable
     }
 
     /**
+     * Creates the normalizer of the placeholders, with the configured placeholder rules
+     *
+     * @param config The server configuration
+     * @return The normalizer, null without placeholders
+     * @throws IllegalArgumentException If the placeholder rules can't be read or are invalid
+     */
+    private static ChatNormalizer createNormalizer(ServerConfiguration config)
+    {
+        if (!config.placeholders())
+        {
+            return null;
+        }
+
+        try
+        {
+            return ChatNormalizer.load(config.placeholderRulesPath());
+        }
+        catch (IOException e)
+        {
+            throw new IllegalArgumentException("Failed to read the placeholder rules " + config.placeholderRulesPath() + ": " + e.getMessage(), e);
+        }
+    }
+
+    /**
      * Starts the BayesianServer instance
      *
      * @throws IOException Thrown if any file operations failed
