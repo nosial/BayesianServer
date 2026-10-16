@@ -244,7 +244,40 @@ public final class BayesianServer implements AutoCloseable
     {
         LOGGER.info("Starting BayesianServer");
 
-        if (this.config.mml())
+        if (this.logisticModel != null)
+        {
+            Path modelPath = this.config.modelPath();
+            if (Files.exists(modelPath) && !Files.isDirectory(modelPath))
+            {
+                throw new IOException("The --model parameter must be pointing to a folder, but path '" + modelPath + "' is an existing file.");
+            }
+
+            if (this.config.embeddingModelPath() != null)
+            {
+                // Before loading, weights trained without this embedding model are retrained
+                this.embeddingModel = new EmbeddingModel(this.config.embeddingModelPath());
+                this.logisticModel.setEmbeddingModel(this.embeddingModel);
+            }
+
+            if (!this.logisticModel.load(modelPath))
+            {
+                LOGGER.info("No logistic model found at {}; starting a new model", modelPath);
+            }
+
+            if (!this.config.readOnly())
+            {
+                this.logisticModel.startRetraining(this.config.retrainIntervalSeconds());
+                this.learningQueue.start();
+                this.scheduler.markPersisted();
+                this.scheduler.start();
+                if (this.implicitLearner != null)
+                {
+                    this.implicitLearner.load();
+                    this.implicitLearner.start();
+                }
+            }
+        }
+        else if (this.config.mml())
         {
             Path modelPath = this.config.modelPath();
             if (Files.exists(modelPath) && !Files.isDirectory(modelPath))
@@ -274,6 +307,7 @@ public final class BayesianServer implements AutoCloseable
                             Utilities.formatBytes((long) this.config.memoryLimitMB() * 1024 * 1024));
                 }
 
+                loadLedger(this.languageModelManager.totalDocumentCount());
                 this.learningQueue.start();
                 this.scheduler.markPersisted();
                 this.scheduler.start();
@@ -299,6 +333,7 @@ public final class BayesianServer implements AutoCloseable
 
             if (!this.config.readOnly())
             {
+                loadLedger(this.model.totalDocumentCount());
                 this.learningQueue.start();
                 this.scheduler.markPersisted();
                 this.scheduler.start();
@@ -307,8 +342,10 @@ public final class BayesianServer implements AutoCloseable
 
         this.httpServer.start();
 
-        int totalLabels = this.config.mml() ? this.languageModelManager.labelCount() : this.model.labelCount();
-        long totalDocs = this.config.mml() ? this.languageModelManager.totalDocumentCount() : this.model.totalDocumentCount();
+        int totalLabels = this.logisticModel != null ? this.logisticModel.labelCount()
+                : this.config.mml() ? this.languageModelManager.labelCount() : this.model.labelCount();
+        long totalDocs = this.logisticModel != null ? this.logisticModel.totalDocumentCount()
+                : this.config.mml() ? this.languageModelManager.totalDocumentCount() : this.model.totalDocumentCount();
 
         if (this.config.readOnly())
         {
