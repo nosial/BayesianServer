@@ -1,6 +1,7 @@
 package net.nosial.bayesian_server.methods;
 
 import net.nosial.bayesian_server.classes.CsvLogWriter;
+import net.nosial.bayesian_server.classes.ImplicitLearner;
 import net.nosial.bayesian_server.classes.LearningQueue;
 import net.nosial.bayesian_server.classes.Utilities;
 import net.nosial.bayesian_server.interfaces.ApiHandlerInterface;
@@ -23,6 +24,10 @@ public final class LearningHandler implements ApiHandlerInterface
     private final LearningQueue learningQueue;
     private final boolean readOnly;
     private final CsvLogWriter archive;
+    private final boolean correction;
+    private final boolean dedup;
+    private final boolean forget;
+    private volatile ImplicitLearner implicitLearner;
 
     /**
      * LearningHandler Constructor
@@ -44,9 +49,70 @@ public final class LearningHandler implements ApiHandlerInterface
      */
     public LearningHandler(LearningQueue learningQueue, boolean readOnly, CsvLogWriter archive)
     {
+        this(learningQueue, readOnly, archive, false, false);
+    }
+
+    /**
+     * LearningHandler Constructor
+     *
+     * @param learningQueue The learning queue for submitting training tasks
+     * @param readOnly Whether the server is in read-only mode
+     * @param archive Optional CSV writer for archiving training data, or {@code null} to disable archiving
+     * @param correction {@code true} to handle {@code PATCH /}: the labels correct the texts, every earlier training
+     *                   of a text is removed and it is learned once with the given labels
+     */
+    public LearningHandler(LearningQueue learningQueue, boolean readOnly, CsvLogWriter archive, boolean correction)
+    {
+        this(learningQueue, readOnly, archive, correction, false);
+    }
+
+    /**
+     * LearningHandler Constructor
+     *
+     * @param learningQueue The learning queue for submitting training tasks
+     * @param readOnly Whether the server is in read-only mode
+     * @param archive Optional CSV writer for archiving training data, or {@code null} to disable archiving
+     * @param correction {@code true} to handle {@code PATCH /}: the labels correct the texts
+     * @param dedup {@code true} to treat every learned text as a correction (the latest labels of a text win)
+     */
+    public LearningHandler(LearningQueue learningQueue, boolean readOnly, CsvLogWriter archive, boolean correction, boolean dedup)
+    {
+        this(learningQueue, readOnly, archive, correction, dedup, false);
+    }
+
+    private LearningHandler(LearningQueue learningQueue, boolean readOnly, CsvLogWriter archive, boolean correction, boolean dedup,
+                            boolean forget)
+    {
         this.learningQueue = learningQueue;
         this.readOnly = readOnly;
         this.archive = archive;
+        this.correction = correction;
+        this.dedup = dedup;
+        this.forget = forget;
+    }
+
+    /**
+     * Creates the handler of {@code DELETE /}: every earlier training of the given texts is removed. The archive
+     * records a forgotten text as a row without labels, so a model rebuilt from it forgets the text too.
+     *
+     * @param learningQueue The learning queue for submitting the tasks
+     * @param readOnly Whether the server is in read-only mode
+     * @param archive Optional CSV writer for archiving training data, or {@code null} to disable archiving
+     * @return the handler
+     */
+    public static LearningHandler forgetting(LearningQueue learningQueue, boolean readOnly, CsvLogWriter archive)
+    {
+        return new LearningHandler(learningQueue, readOnly, archive, true, false, true);
+    }
+
+    /**
+     * Attaches the implicit learner, a text learned, corrected or forgotten explicitly is no longer learned implicitly.
+     *
+     * @param implicitLearner the implicit learner, or {@code null}
+     */
+    public void setImplicitLearner(ImplicitLearner implicitLearner)
+    {
+        this.implicitLearner = implicitLearner;
     }
 
     @Override
@@ -61,21 +127,20 @@ public final class LearningHandler implements ApiHandlerInterface
         List<TrainingTask> tasks = buildTasks(body);
         if (tasks.isEmpty())
         {
-            throw ApiException.badRequest("provide a 'text' with 'label'/'labels', or a 'documents' array");
+            throw ApiException.badRequest(this.forget
+                    ? "provide a 'text', or a 'documents' array"
+                    : "provide a 'text' with 'label'/'labels', or a 'documents' array");
         }
 
-        if (this.archive != null)
-        {
-            this.appendToArchive(tasks);
-        }
-
-        int submitted = 0;
+        // Only documents the queue accepted are archived, so that a model rebuilt from the archive learns exactly what
+        // this one learned
+        List<TrainingTask> accepted = new ArrayList<>(tasks.size());
         int rejected = 0;
         for (TrainingTask task : tasks)
         {
             if (this.learningQueue.submit(task))
             {
-                submitted++;
+                accepted.add(task);
             }
             else
             {
@@ -83,11 +148,25 @@ public final class LearningHandler implements ApiHandlerInterface
             }
         }
 
-        boolean accepted = rejected == 0;
+        if (this.archive != null)
+        {
+            this.appendToArchive(accepted);
+        }
+
+        ImplicitLearner implicit = this.implicitLearner;
+        if (implicit != null)
+        {
+            for (TrainingTask task : accepted)
+            {
+                implicit.cancel(task.text());
+            }
+        }
+
+        int submitted = accepted.size();
+
         LearningQueueStatus qStatus = this.learningQueue.status();
-        LearnResponse response = new LearnResponse(accepted, submitted, rejected, qStatus.pending(), qStatus.currentDocs(), qStatus.maxDocs(), qStatus.rejectedMaxDocs());
-        int status = submitted == 0 ? 503 : 202;
-        return ApiResponse.status(status, response);
+        LearnResponse response = new LearnResponse(rejected == 0, submitted, rejected, qStatus.pending(), qStatus.currentDocs(), qStatus.maxDocs(), qStatus.rejectedMaxDocs());
+        return submitted == 0 ? ApiResponse.status(503, response) : ApiResponse.accepted(response);
     }
 
     /**
@@ -106,7 +185,7 @@ public final class LearningHandler implements ApiHandlerInterface
 
         if (body.text() != null && !body.text().isBlank())
         {
-            tasks.add(new TrainingTask(body.text(), requireLabels(mergeLabels(body.label(), body.labels()))));
+            tasks.add(task(body.text(), mergeLabels(body.label(), body.labels()), body.weight()));
         }
         else if (body.label() != null || (body.labels() != null && !body.labels().isEmpty()))
         {
@@ -127,11 +206,44 @@ public final class LearningHandler implements ApiHandlerInterface
                     throw ApiException.badRequest("each document in 'documents' requires non-empty 'text'");
                 }
 
-                tasks.add(new TrainingTask(doc.text(), requireLabels(mergeLabels(doc.label(), doc.labels()))));
+                tasks.add(task(doc.text(), mergeLabels(doc.label(), doc.labels()), doc.weight()));
             }
         }
 
         return tasks;
+    }
+
+    /**
+     * Creates the task of a document: a forget task when this handler forgets texts (which takes no labels or weight),
+     * otherwise a training task, a correction when this handler handles corrections.
+     *
+     * @param text the document text
+     * @param labels the document labels
+     * @param weight the weight of the document, {@code null} for 1
+     * @return the task
+     * @throws ApiException if the labels or the weight are invalid
+     */
+    private TrainingTask task(String text, List<String> labels, Double weight)
+    {
+        if (this.forget)
+        {
+            if (!labels.isEmpty() || weight != null)
+            {
+                throw ApiException.badRequest("forgetting a text takes no 'label'/'labels' or 'weight'");
+            }
+
+            return TrainingTask.forgetting(text);
+        }
+
+        requireLabels(labels);
+        double documentWeight = weight == null ? 1.0 : weight;
+        if (!(documentWeight > 0.0) || documentWeight > TrainingTask.MAX_WEIGHT)
+        {
+            throw ApiException.badRequest("'weight' must be greater than 0 and at most " + TrainingTask.MAX_WEIGHT);
+        }
+
+        return this.correction || this.dedup ? TrainingTask.correction(text, labels, documentWeight)
+                : TrainingTask.training(text, labels, documentWeight);
     }
 
     /**
@@ -183,11 +295,20 @@ public final class LearningHandler implements ApiHandlerInterface
             throw ApiException.badRequest("each document may have at most " + NaiveBayesModel.MAX_LABELS_PER_DOCUMENT + " labels");
         }
 
+        // The archive separates the labels of a document with ';', a label containing it couldn't be rebuilt
+        for (String label : labels)
+        {
+            if (label.indexOf(';') >= 0)
+            {
+                throw ApiException.badRequest("labels must not contain ';'");
+            }
+        }
+
         return labels;
     }
 
     /**
-     * Request body for {@code PUSH /}.
+     * Request body for {@code PUSH /} and {@code PATCH /}.
      *
      * <p>Supports both a single document (via the top-level {@code text} + {@code label}/{@code labels}
      * fields) and an efficient batch (via {@code documents}). At least one form must be present.
@@ -195,9 +316,11 @@ public final class LearningHandler implements ApiHandlerInterface
      * @param text single-document text
      * @param label single label shorthand (combined with {@code labels})
      * @param labels one or more labels for the single document
+     * @param weight how much the single document counts in training the logistic model (default 1, at most
+     *               {@code TrainingTask.MAX_WEIGHT}); documents with a weight below 1 don't calibrate the thresholds
      * @param documents batch of documents to learn in one request
      */
-    record LearnRequest(String text, String label, List<String> labels, List<Document> documents)
+    record LearnRequest(String text, String label, List<String> labels, Double weight, List<Document> documents)
     {
 
         /**
@@ -206,8 +329,9 @@ public final class LearningHandler implements ApiHandlerInterface
          * @param text   the document text
          * @param label  single label shorthand (combined with {@code labels})
          * @param labels one or more labels for the document
+         * @param weight how much the document counts in training the logistic model (default 1)
          */
-        record Document(String text, String label, List<String> labels) { }
+        record Document(String text, String label, List<String> labels, Double weight) { }
     }
 
     /**
@@ -232,9 +356,11 @@ public final class LearningHandler implements ApiHandlerInterface
      */
     private void appendToArchive(List<TrainingTask> tasks)
     {
+        // A forgotten text is archived without labels
         for (TrainingTask task : tasks)
         {
-            this.archive.offer(Utilities.escapeCsv(String.join(";", task.labels())) + "," + Utilities.escapeCsv(task.text()));
+            this.archive.offer(Utilities.escapeCsv(String.join(";", task.labels())) + "," + Utilities.escapeCsv(task.text())
+                    + "," + task.weight());
         }
     }
 }
