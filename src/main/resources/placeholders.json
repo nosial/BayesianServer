@@ -1,0 +1,35 @@
+{
+  "rules": [
+    {
+      "name": "url",
+      "pattern": "(?i)(?:https?://|www\\.)\\S+|\\b[\\w-]+\\.(?:com|net|org|io|me|xyz|top|vip|cc|ru|cn|shop|site|online|link|app)\\b\\S*",
+      "placeholder": "xurlx"
+    },
+    {
+      "name": "mention",
+      "pattern": "(?<![\\w@])@[A-Za-z][A-Za-z0-9_]{3,}",
+      "placeholder": "xmentionx"
+    },
+    {
+      "name": "phone",
+      "pattern": "(?<!\\w)\\+?\\d[\\d\\s().-]{8,}\\d(?!\\w)",
+      "placeholder": "xphonex"
+    },
+    {
+      "name": "money",
+      "pattern": "(?i)[$€£₹¥]\\s?\\d[\\d,.]*|\\d[\\d,.]*\\s?(?:usdt|usd|\\$|€|₹|k\\b|元|万)",
+      "placeholder": "xmoneyx"
+    },
+    {
+      "name": "number",
+      "pattern": "\\d+",
+      "placeholder": "xnum{length}",
+      "length_cap": 6
+    },
+    {
+      "name": "emoji",
+      "pattern": "[\\x{1F000}-\\x{1FAFF}\\x{2600}-\\x{27BF}\\x{2B00}-\\x{2BFF}\\x{2190}-\\x{21FF}\\x{3297}\\x{3299}\\x{303D}]",
+      "placeholder": "emj{codepoint}"
+    }
+  ]
+}
