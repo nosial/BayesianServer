@@ -21,7 +21,7 @@ marks and for Turkish
    by `GET /`
  - `--placeholders` replaces links, mentions, phone numbers, prices, numbers and emoji with placeholder words, and
    invisible characters with a marker, instead of removing them. The rules are generic, `--placeholder-rules` adds the
-   rules of an application (eg; `examples/placeholder_rules.telegram.json` for Telegram links) or replaces them
+   rules of an application or replaces them
  - `--stop-words false` keeps every word
  - `--dedup`: learning a text again replaces its earlier labels (the latest label of a text wins)
  - `PATCH /` corrects the labels of learned texts. It takes the same body as `PUSH /`; every earlier training of each
