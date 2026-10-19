@@ -1,10 +1,12 @@
 package net.nosial.bayesian_server.classes;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.DeserializationFeature;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.PropertyNamingStrategies;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.DeserializationFeature;
+import tools.jackson.databind.MapperFeature;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.PropertyNamingStrategies;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.io.IOException;
 
@@ -20,10 +22,12 @@ public final class Json
      */
     private static ObjectMapper createReader()
     {
-        ObjectMapper mapper = new ObjectMapper();
-        mapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
-        mapper.setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE);
-        return mapper;
+        return JsonMapper.builder()
+                .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
+                // Jackson 3 rejects null for primitive fields by default, keep accepting it as the default value
+                .configure(DeserializationFeature.FAIL_ON_NULL_FOR_PRIMITIVES, false)
+                .propertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE)
+                .build();
     }
 
     /**
@@ -33,14 +37,14 @@ public final class Json
      */
     private static ObjectMapper createWriter()
     {
-        ObjectMapper mapper = new ObjectMapper();
-
-        // Omit null fields to keep responses compact.
-        mapper.setDefaultPropertyInclusion(JsonInclude.Include.NON_NULL);
-
-        // All JSON responses use snake_case (e.g. "top_label" not "topLabel").
-        mapper.setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE);
-        return mapper;
+        return JsonMapper.builder()
+                // Omit null fields to keep responses compact.
+                .changeDefaultPropertyInclusion(inclusion -> inclusion.withValueInclusion(JsonInclude.Include.NON_NULL))
+                // All JSON responses use snake_case (e.g. "top_label" not "topLabel").
+                .propertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE)
+                // Jackson 3 sorts properties alphabetically by default, keep the declaration order of the records
+                .configure(MapperFeature.SORT_PROPERTIES_ALPHABETICALLY, false)
+                .build();
     }
 
     /**
@@ -55,7 +59,7 @@ public final class Json
         {
             return WRITER.writeValueAsBytes(value);
         }
-        catch (JsonProcessingException e)
+        catch (JacksonException e)
         {
             // Serializing our own response objects should never fail; treat as a programming error.
             throw new IllegalStateException("Failed to serialize response to JSON", e);
@@ -74,7 +78,7 @@ public final class Json
         {
             return WRITER.writeValueAsString(value);
         }
-        catch (JsonProcessingException e)
+        catch (JacksonException e)
         {
             throw new IllegalStateException("Failed to serialize value to JSON", e);
         }
@@ -87,7 +91,15 @@ public final class Json
      */
     public static <T> T parse(byte[] data, Class<T> type) throws IOException
     {
-        return READER.readValue(data, type);
+        try
+        {
+            return READER.readValue(data, type);
+        }
+        catch (JacksonException e)
+        {
+            // Jackson 3 exceptions are unchecked, callers handle malformed JSON as an IOException
+            throw new IOException(e.getOriginalMessage(), e);
+        }
     }
 
     /**
