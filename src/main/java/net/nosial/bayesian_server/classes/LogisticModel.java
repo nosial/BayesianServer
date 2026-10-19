@@ -1156,12 +1156,12 @@ public final class LogisticModel implements AutoCloseable
         }
 
         int k = 0;
-        switch (length - i)
+        int tail = length - i;
+        if (tail >= 3) k ^= (data[i + 2] & 0xff) << 16;
+        if (tail >= 2) k ^= (data[i + 1] & 0xff) << 8;
+        if (tail >= 1)
         {
-            case 3: k ^= (data[i + 2] & 0xff) << 16;
-            case 2: k ^= (data[i + 1] & 0xff) << 8;
-            case 1: k ^= data[i] & 0xff; k *= 0xcc9e2d51; k = Integer.rotateLeft(k, 15); k *= 0x1b873593; h ^= k;
-            default: break;
+            k ^= data[i] & 0xff; k *= 0xcc9e2d51; k = Integer.rotateLeft(k, 15); k *= 0x1b873593; h ^= k;
         }
 
         h ^= length;

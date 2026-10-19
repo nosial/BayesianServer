@@ -81,11 +81,6 @@ public final class ClassificationHandler implements ApiHandlerInterface {
     }
 
     /**
-     * Attaches an analytical monitoring instance for recording classification events.
-     *
-     * @param monitoring The analytical monitoring instance, or null to disable
-     */
-    /**
      * Creates a classification handler for the logistic model, which applies the preprocessing itself.
      *
      * @param logisticModel the logistic model
@@ -102,6 +97,11 @@ public final class ClassificationHandler implements ApiHandlerInterface {
         this.stopWords = new StopWordRegistry(false);
     }
 
+    /**
+     * Attaches an analytical monitoring instance for recording classification events.
+     *
+     * @param monitoring The analytical monitoring instance, or null to disable
+     */
     public void setAnalyticalMonitoring(AnalyticalMonitoring monitoring)
     {
         this.monitoring = monitoring;
