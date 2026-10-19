@@ -62,15 +62,4 @@ public class ApiException extends RuntimeException
     {
         return new ApiException(405, message);
     }
-
-    /**
-     * Creates a new {@link ApiException} representing an HTTP 503 Service Unavailable.
-     *
-     * @param message the detail message
-     * @return a new {@link ApiException} with status 503
-     */
-    public static ApiException serviceUnavailable(String message)
-    {
-        return new ApiException(503, message);
-    }
 }
