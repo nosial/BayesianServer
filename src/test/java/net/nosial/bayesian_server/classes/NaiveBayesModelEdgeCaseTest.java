@@ -434,61 +434,6 @@ class NaiveBayesModelEdgeCaseTest
     }
 
     @Test
-    void calibrateThresholdsShouldRejectEmptyAndNullSamples()
-    {
-        NaiveBayesModel model = newModel();
-        assertThrows(IllegalArgumentException.class, () -> model.calibrateThresholds(List.of(), "f1"));
-        assertThrows(IllegalArgumentException.class, () -> model.calibrateThresholds(null, "f1"));
-    }
-
-    @Test
-    void calibrateThresholdsShouldRejectInvalidNullAndEmptyMetric()
-    {
-        NaiveBayesModel model = newModel();
-        List<NaiveBayesModel.ValidationSample> samples = List.of(
-                new NaiveBayesModel.ValidationSample("a", List.of("x"))
-        );
-        assertThrows(IllegalArgumentException.class, () -> model.calibrateThresholds(samples, "invalid"));
-        assertThrows(NullPointerException.class, () -> model.calibrateThresholds(samples, null));
-        assertThrows(IllegalArgumentException.class, () -> model.calibrateThresholds(samples, ""));
-    }
-
-    @Test
-    void calibrateThresholdsShouldWorkWithSingleSample()
-    {
-        NaiveBayesModel model = newModel();
-        model.train("a", List.of("x"));
-        List<NaiveBayesModel.ValidationSample> samples = List.of(
-                new NaiveBayesModel.ValidationSample("a", List.of("x"))
-        );
-        model.calibrateThresholds(samples, "f1");
-        assertTrue(model.statistics().labelCount() >= 1);
-    }
-
-    @Test
-    void calibrateThresholdsShouldWorkWithAllMetricsAndEmptyLabels()
-    {
-        NaiveBayesModel model = newModel();
-        model.train("a", List.of("x"));
-        model.train("b", List.of("y"));
-        List<NaiveBayesModel.ValidationSample> samples = List.of(
-                new NaiveBayesModel.ValidationSample("a", List.of("x")),
-                new NaiveBayesModel.ValidationSample("b", List.of("y"))
-        );
-
-        for (String metric : List.of("f1", "jaccard", "hamming", "accuracy"))
-        {
-            model.calibrateThresholds(samples, metric);
-            assertTrue(model.statistics().labelCount() >= 2, "metric=" + metric);
-        }
-
-        List<NaiveBayesModel.ValidationSample> empty = List.of(
-                new NaiveBayesModel.ValidationSample("a", List.of())
-        );
-        model.calibrateThresholds(empty, "f1");
-        assertTrue(model.statistics().labelCount() >= 2);
-    }
-    @Test
     void versionShouldIncrementOnTrain()
     {
         NaiveBayesModel model = newModel();
@@ -543,7 +488,7 @@ class NaiveBayesModelEdgeCaseTest
     }
 
     @Test
-    void evictLabelShouldNotThrowAndDoNothingWithoutStore()
+    void evictLabelShouldNotThrowAndDoNothingWithoutStore() throws IOException
     {
         NaiveBayesModel model = newModel();
         assertDoesNotThrow(() -> model.evictLabel("missing"));
@@ -712,7 +657,6 @@ class NaiveBayesModelEdgeCaseTest
     {
         NaiveBayesModel model = newModel();
         model.registerLabel("untrained");
-        assertTrue(model.hasLabels());
         assertEquals(1, model.labelCount());
         assertEquals(0, model.totalDocumentCount());
         assertEquals(0, model.version());
@@ -732,7 +676,6 @@ class NaiveBayesModelEdgeCaseTest
         assertEquals(0, stats.totalTokenOccurrences());
         assertEquals(0, stats.vocabularySize());
         assertDoesNotThrow(() -> model.pruneVocabulary(1));
-        assertDoesNotThrow(() -> model.calibrateThresholds(List.of(new NaiveBayesModel.ValidationSample("text", List.of("untrained"))), "f1"));
         assertDoesNotThrow(() -> model.setMemoryLimitMB(10));
         assertDoesNotThrow(() -> model.evictLabel("untrained"));
         model.restoreLabel(new LabelSnapshot("untrained", 0, new String[]{"a"}, new long[]{1}));

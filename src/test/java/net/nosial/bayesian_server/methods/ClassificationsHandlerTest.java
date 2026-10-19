@@ -44,7 +44,7 @@ class ClassificationsHandlerTest
     {
         Path datalog = dir.resolve("datalog.csv");
         ClassificationHandler handler = createHandler();
-        try (CsvLogWriter writer = new CsvLogWriter(datalog, "labels,content", 100, "test-datalog"))
+        try (CsvLogWriter writer = new CsvLogWriter(datalog, ClassificationHandler.DATALOG_HEADER, 100, "test-datalog"))
         {
             handler.setDatalog(writer);
             handler.handle(new ApiRequest("POST", "/", Map.of(), "{\"text\":\"buy cheap pills\"}".getBytes()));
@@ -53,7 +53,8 @@ class ClassificationsHandlerTest
 
         List<String> lines = Files.readAllLines(datalog);
         assertEquals(3, lines.size());
-        assertEquals("labels,content", lines.get(0));
+        assertEquals(ClassificationHandler.DATALOG_HEADER, lines.get(0));
+        assertEquals(8, lines.get(1).split(",", -1).length, "timestamp, labels, top label, probability, negative label and probability, model version, content");
         assertTrue(lines.get(1).endsWith(",buy cheap pills"), lines.get(1));
         assertTrue(lines.get(1).contains("spam"), lines.get(1));
         assertTrue(lines.get(2).endsWith(",\"meeting, \"\"tomorrow\"\"\""), lines.get(2));

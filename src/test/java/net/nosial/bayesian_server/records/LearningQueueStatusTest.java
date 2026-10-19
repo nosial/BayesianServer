@@ -10,7 +10,7 @@ class LearningQueueStatusTest
     @Test
     void shouldCreateStatus()
     {
-        LearningQueueStatus status = new LearningQueueStatus(5, 100, 2, 50, 45, 3, 2, 1, 1000, 500);
+        LearningQueueStatus status = new LearningQueueStatus(5, 100, 2, 50, 45, 3, 2, 1, 1000, 500, 0, 0);
         assertEquals(5, status.pending());
         assertEquals(100, status.capacity());
         assertEquals(2, status.workers());
@@ -26,7 +26,7 @@ class LearningQueueStatusTest
     @Test
     void shouldHandleZeroValues()
     {
-        LearningQueueStatus status = new LearningQueueStatus(0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+        LearningQueueStatus status = new LearningQueueStatus(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
         assertEquals(0, status.pending());
         assertEquals(0, status.capacity());
         assertEquals(0, status.workers());
@@ -45,7 +45,7 @@ class LearningQueueStatusTest
         LearningQueueStatus status = new LearningQueueStatus(
                 Integer.MAX_VALUE, Integer.MAX_VALUE, Integer.MAX_VALUE,
                 Long.MAX_VALUE, Long.MAX_VALUE, Long.MAX_VALUE, Long.MAX_VALUE, Long.MAX_VALUE,
-                Long.MAX_VALUE, Long.MAX_VALUE
+                Long.MAX_VALUE, Long.MAX_VALUE, 0, 0
         );
         assertEquals(Integer.MAX_VALUE, status.pending());
         assertEquals(Integer.MAX_VALUE, status.capacity());
@@ -62,7 +62,7 @@ class LearningQueueStatusTest
     @Test
     void shouldHandleFullQueue()
     {
-        LearningQueueStatus status = new LearningQueueStatus(100, 100, 4, 200, 100, 0, 0, 0, 0, 100);
+        LearningQueueStatus status = new LearningQueueStatus(100, 100, 4, 200, 100, 0, 0, 0, 0, 100, 0, 0);
         assertEquals(100, status.pending());
         assertEquals(100, status.capacity());
         assertEquals(0, status.rejected());
@@ -74,7 +74,7 @@ class LearningQueueStatusTest
     @Test
     void shouldHandleAllRejected()
     {
-        LearningQueueStatus status = new LearningQueueStatus(0, 100, 0, 0, 0, 0, 50, 0, 100, 100);
+        LearningQueueStatus status = new LearningQueueStatus(0, 100, 0, 0, 0, 0, 50, 0, 100, 100, 0, 0);
         assertEquals(0, status.pending());
         assertEquals(50, status.rejected());
         assertEquals(0, status.rejectedMaxDocs());
@@ -85,7 +85,7 @@ class LearningQueueStatusTest
     @Test
     void shouldHandleAllFailed()
     {
-        LearningQueueStatus status = new LearningQueueStatus(0, 100, 2, 10, 0, 10, 0, 0, 0, 0);
+        LearningQueueStatus status = new LearningQueueStatus(0, 100, 2, 10, 0, 10, 0, 0, 0, 0, 0, 0);
         assertEquals(0, status.pending());
         assertEquals(0, status.processed());
         assertEquals(10, status.failed());

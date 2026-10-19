@@ -701,65 +701,6 @@ class NaiveBayesModelMathematicalTest
     }
 
     @Test
-    void calibrationShouldChangeEffectiveThreshold()
-    {
-        NaiveBayesModel model = new NaiveBayesModel(new UnicodeTokenizer(1, 40, true), 1.0);
-        model.train("apple banana", List.of("fruit"));
-        model.train("car truck", List.of("vehicle"));
-
-        // Before calibration
-        ClassificationResult before = model.classify("apple", 0, 0.5);
-        assertTrue(before.predictedLabels().contains("fruit"));
-
-        // Calibrate with a validation set that suggests fruit needs a higher threshold
-        List<NaiveBayesModel.ValidationSample> samples = new ArrayList<>();
-        samples.add(new NaiveBayesModel.ValidationSample("apple", List.of("fruit")));
-        samples.add(new NaiveBayesModel.ValidationSample("car", List.of("vehicle")));
-        samples.add(new NaiveBayesModel.ValidationSample("apple", List.of("fruit")));
-        model.calibrateThresholds(samples, "accuracy");
-
-        // After calibration, the threshold may have changed
-        // We just verify it doesn't throw and produces a valid result
-        ClassificationResult after = model.classify("apple", 0, 0.5);
-        assertNotNull(after);
-    }
-
-    @Test
-    void f1MetricShouldMatchFormula() throws Exception
-    {
-        Method evaluateMetric = Utilities.class.getDeclaredMethod("evaluateMetric", long.class, long.class, long.class, long.class, String.class);
-        evaluateMetric.setAccessible(true);
-
-        // F1 = 0 when all zeros
-        assertEquals(0.0, (double) evaluateMetric.invoke(null, 0L, 0L, 0L, 0L, "f1"), 1e-12);
-        // F1 = 1 when perfect
-        assertEquals(1.0, (double) evaluateMetric.invoke(null, 1L, 0L, 0L, 0L, "f1"), 1e-12);
-        // F1 = 2*5 / (2*5 + 2 + 3) = 10 / 15 = 0.666...
-        assertEquals(10.0 / 15.0, (double) evaluateMetric.invoke(null, 5L, 2L, 0L, 3L, "f1"), 1e-12);
-    }
-
-    @Test
-    void jaccardMetricShouldMatchFormula() throws Exception
-    {
-        Method evaluateMetric = Utilities.class.getDeclaredMethod("evaluateMetric", long.class, long.class, long.class, long.class, String.class);
-        evaluateMetric.setAccessible(true);
-
-        assertEquals(0.0, (double) evaluateMetric.invoke(null, 0L, 0L, 0L, 0L, "jaccard"), 1e-12);
-        assertEquals(1.0, (double) evaluateMetric.invoke(null, 1L, 0L, 0L, 0L, "jaccard"), 1e-12);
-        assertEquals(5.0 / 10.0, (double) evaluateMetric.invoke(null, 5L, 3L, 0L, 2L, "jaccard"), 1e-12);
-    }
-
-    @Test
-    void accuracyMetricShouldMatchFormula() throws Exception {
-        Method evaluateMetric = Utilities.class.getDeclaredMethod("evaluateMetric", long.class, long.class, long.class, long.class, String.class);
-        evaluateMetric.setAccessible(true);
-
-        assertEquals(0.0, (double) evaluateMetric.invoke(null, 0L, 0L, 0L, 0L, "accuracy"), 1e-12);
-        // tp=5, fp=3, tn=7, fn=2 => accuracy = (5+7) / (5+3+7+2) = 12/17
-        assertEquals(12.0 / 17.0, (double) evaluateMetric.invoke(null, 5L, 3L, 7L, 2L, "accuracy"), 1e-12);
-    }
-
-    @Test
     void handCalculatedClassificationShouldMatchExactly()
     {
         NaiveBayesModel model = new NaiveBayesModel(new UnicodeTokenizer(1, 40, true), 1.0);

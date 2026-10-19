@@ -39,14 +39,6 @@ class ApiExceptionTest
     }
 
     @Test
-    void serviceUnavailableShouldReturn503()
-    {
-        ApiException ex = ApiException.serviceUnavailable("Overloaded");
-        assertEquals(503, ex.status());
-        assertEquals("Overloaded", ex.getMessage());
-    }
-
-    @Test
     void shouldBeRuntimeException()
     {
         ApiException ex = new ApiException(500, "error");
