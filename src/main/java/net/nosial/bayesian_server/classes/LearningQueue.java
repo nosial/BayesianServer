@@ -10,6 +10,7 @@ import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
@@ -25,9 +26,10 @@ public final class LearningQueue implements AutoCloseable
     private static final int BATCH_SIZE = 32;
 
     private final NaiveBayesModel model;
+    private final LogisticModel logisticModel;
     private final LanguageModelManager languageModelManager;
     private final StopWordRegistry stopWords;
-    private final BlockingQueue<TrainingTask> queue;
+    private final List<BlockingQueue<TrainingTask>> queues;
     private final int workerCount;
     private final int capacity;
     private final double mmlConfidenceThreshold;
@@ -42,7 +44,11 @@ public final class LearningQueue implements AutoCloseable
     private final LanguageDetection languageDetection;
     private final List<Filters> filters;
 
+    private final AtomicLong corrected = new AtomicLong();
+    private final AtomicLong uncorrectable = new AtomicLong();
     private volatile AnalyticalMonitoring monitoring;
+    private volatile TrainingLedger ledger;
+    private volatile ChatNormalizer normalizer;
     private volatile boolean accepting = true;
     private volatile boolean running = true;
 
@@ -102,6 +108,7 @@ public final class LearningQueue implements AutoCloseable
         }
 
         this.model = null;
+        this.logisticModel = null;
         this.languageModelManager = languageModelManager;
         this.stopWords = stopWords;
         this.workerCount = workerCount;
@@ -109,7 +116,7 @@ public final class LearningQueue implements AutoCloseable
         this.mmlConfidenceThreshold = mmlConfidenceThreshold;
         this.maxDocs = maxDocs;
         this.currentDocCount = currentDocCount;
-        this.queue = new ArrayBlockingQueue<>(capacity);
+        this.queues = partitions(workerCount, capacity);
         this.languageDetection = languageDetection;
         this.filters = filters == null ? List.of() : List.copyOf(filters);
     }
@@ -160,6 +167,7 @@ public final class LearningQueue implements AutoCloseable
         }
 
         this.model = model;
+        this.logisticModel = null;
         this.languageModelManager = null;
         this.stopWords = stopWords;
         this.workerCount = workerCount;
@@ -167,16 +175,66 @@ public final class LearningQueue implements AutoCloseable
         this.mmlConfidenceThreshold = mmlConfidenceThreshold;
         this.maxDocs = maxDocs;
         this.currentDocCount = currentDocCount;
-        this.queue = new ArrayBlockingQueue<>(capacity);
+        this.queues = partitions(workerCount, capacity);
         this.languageDetection = languageDetection;
         this.filters = filters == null ? List.of() : List.copyOf(filters);
     }
 
     /**
-     * Attaches an analytical monitoring instance for recording training and rejection events.
+     * Creates a learning queue for the logistic model. Preprocessing is part of the model, so the workers only add
+     * documents to its store; a correction is the same as learning, as the latest labels of a text replace earlier
+     * ones.
      *
-     * @param monitoring The analytical monitoring instance, or null to disable
+     * @param logisticModel the logistic model
+     * @param workerCount the number of workers
+     * @param capacity the total queue capacity
+     * @param maxDocs the maximum number of documents, 0 for unlimited
      */
+    public LearningQueue(LogisticModel logisticModel, int workerCount, int capacity, long maxDocs)
+    {
+        if (workerCount < 1 || capacity < 1 || maxDocs < 0)
+        {
+            throw new IllegalArgumentException("workerCount and capacity must be >= 1, maxDocs >= 0");
+        }
+
+        this.model = null;
+        this.logisticModel = logisticModel;
+        this.languageModelManager = null;
+        this.stopWords = new StopWordRegistry(false);
+        this.workerCount = workerCount;
+        this.capacity = capacity;
+        this.mmlConfidenceThreshold = 0.35;
+        this.maxDocs = maxDocs;
+        this.currentDocCount = logisticModel::totalDocumentCount;
+        this.queues = partitions(workerCount, capacity);
+        this.languageDetection = null;
+        this.filters = List.of();
+    }
+
+    /**
+     * Sets the normalizer texts are normalized with before the filters are applied. Must be called before
+     * {@link #start()}.
+     *
+     * @param normalizer the normalizer replacing structured content with placeholder words, or {@code null}
+     */
+    public void setNormalizer(ChatNormalizer normalizer)
+    {
+        this.normalizer = normalizer;
+    }
+
+    /**
+     * Applies the configured preprocessing (placeholders, then filters) to a raw text.
+     *
+     * @param rawText the text as submitted
+     * @return the preprocessed text
+     */
+    private String preprocess(String rawText)
+    {
+        ChatNormalizer chatNormalizer = this.normalizer;
+        String text = chatNormalizer != null ? chatNormalizer.apply(rawText) : rawText;
+        return this.filters.isEmpty() ? text : Filters.filter(text, this.filters);
+    }
+
     public void setAnalyticalMonitoring(AnalyticalMonitoring monitoring)
     {
         this.monitoring = monitoring;
@@ -193,7 +251,8 @@ public final class LearningQueue implements AutoCloseable
         ThreadFactory factory = new NamedThreadFactory("learning-worker");
         for (int i = 0; i < this.workerCount; i++)
         {
-            Thread worker = factory.newThread(this::workerLoop);
+            BlockingQueue<TrainingTask> partition = this.queues.get(i);
+            Thread worker = factory.newThread(() -> workerLoop(partition));
             this.workers.add(worker);
             worker.start();
         }
@@ -217,14 +276,15 @@ public final class LearningQueue implements AutoCloseable
             return false;
         }
 
-        if (this.maxDocs > 0 && this.currentDocCount != null && this.currentDocCount.getAsLong() >= this.maxDocs)
+        // A correction replaces trainings rather than adding a document, so the document limit does not apply to it
+        if (!task.correction() && this.maxDocs > 0 && this.currentDocCount != null && this.currentDocCount.getAsLong() >= this.maxDocs)
         {
             this.rejectedMaxDocs.incrementAndGet();
             recordRejection(task, RejectionReason.MAX_DOCS);
             return false;
         }
 
-        boolean accepted = this.queue.offer(task);
+        boolean accepted = partition(task).offer(task);
         if (accepted)
         {
             this.submitted.incrementAndGet();
@@ -256,7 +316,7 @@ public final class LearningQueue implements AutoCloseable
     /**
      * The main loop for each background worker thread.
      */
-    private void workerLoop()
+    private void workerLoop(BlockingQueue<TrainingTask> queue)
     {
         List<TrainingTask> batch = new ArrayList<>(BATCH_SIZE);
         while (this.running)
@@ -265,7 +325,7 @@ public final class LearningQueue implements AutoCloseable
             {
                 batch.clear();
                 // Try to collect a batch; if we get nothing and are shutting down, exit.
-                TrainingTask first = this.queue.poll(POLL_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS);
+                TrainingTask first = queue.poll(POLL_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS);
                 if (first == null)
                 {
                     if (!this.accepting)
@@ -276,7 +336,7 @@ public final class LearningQueue implements AutoCloseable
                 }
 
                 batch.add(first);
-                this.queue.drainTo(batch, BATCH_SIZE - 1);
+                queue.drainTo(batch, BATCH_SIZE - 1);
                 applyBatch(batch);
             }
             catch (InterruptedException e)
@@ -292,7 +352,7 @@ public final class LearningQueue implements AutoCloseable
         }
         // Final drain pass for anything that slipped in before accepting was disabled.
         batch.clear();
-        this.queue.drainTo(batch);
+        queue.drainTo(batch);
         applyBatch(batch);
     }
 
@@ -308,8 +368,42 @@ public final class LearningQueue implements AutoCloseable
             long startTime = System.currentTimeMillis();
             try
             {
+                if (this.logisticModel != null)
+                {
+                    if (task.forget())
+                    {
+                        this.logisticModel.forget(task.text());
+                    }
+                    else
+                    {
+                        // A correction (PATCH, or PUSH with --dedup) replaces the labels of a known text, a training adds to them
+                        this.logisticModel.learn(task.text(), task.labels(), task.correction(), task.weight());
+                    }
+
+                    this.processed.incrementAndGet();
+                    recordTraining(task, startTime, task.languageCode(), task.confidence(), task.text().length());
+                    continue;
+                }
+
+                if (task.forget())
+                {
+                    // The Naive Bayes models can only remove the trainings the ledger recorded
+                    TrainingLedger trainingLedger = this.ledger;
+                    if (trainingLedger != null)
+                    {
+                        unlearn(task.text(), trainingLedger.take(task.text()));
+                    }
+                    else
+                    {
+                        this.uncorrectable.incrementAndGet();
+                    }
+
+                    this.processed.incrementAndGet();
+                    continue;
+                }
+
                 // Apply text filters and detect language in the background worker.
-                String text = this.filters.isEmpty() ? task.text() : Filters.filter(task.text(), this.filters);
+                String text = preprocess(task.text());
                 String langCode = task.languageCode();
                 double confidence = task.confidence();
 
@@ -329,6 +423,12 @@ public final class LearningQueue implements AutoCloseable
 
                 Set<String> filtered = effectiveLang.equals("und") ? this.stopWords.universal() : this.stopWords.forLanguage(effectiveLang);
 
+                TrainingLedger trainingLedger = this.ledger;
+                if (task.correction() && trainingLedger != null)
+                {
+                    unlearn(task.text(), trainingLedger.take(task.text()));
+                }
+
                 if (this.languageModelManager != null)
                 {
                     this.languageModelManager.train(text, task.labels(), effectiveLang, filtered, this.stopWords.universal());
@@ -337,6 +437,12 @@ public final class LearningQueue implements AutoCloseable
                 {
                     assert this.model != null;
                     this.model.train(text, task.labels(), filtered);
+                }
+
+                if (trainingLedger != null)
+                {
+                    boolean globalTrained = this.languageModelManager != null && this.languageModelManager.trainsGlobalModel(effectiveLang);
+                    trainingLedger.record(task.text(), new TrainingLedger.Training(effectiveLang, globalTrained, task.labels()));
                 }
 
                 this.processed.incrementAndGet();
@@ -370,7 +476,7 @@ public final class LearningQueue implements AutoCloseable
 
         long processingTimeMs = System.currentTimeMillis() - startTime;
         long modelVersion = this.languageModelManager != null ? this.languageModelManager.version()
-                : this.model != null ? this.model.version() : -1;
+                : this.model != null ? this.model.version() : this.logisticModel != null ? this.logisticModel.version() : -1;
 
         mon.recordTraining(System.currentTimeMillis(), languageCode, task.labels(), -1, confidence,
                 processingTimeMs, modelVersion, textLength);
@@ -385,9 +491,9 @@ public final class LearningQueue implements AutoCloseable
     public LearningQueueStatus status()
     {
         long currentDocs = this.currentDocCount != null ? this.currentDocCount.getAsLong() : 0;
-        return new LearningQueueStatus(this.queue.size(), this.capacity, this.workerCount,
+        return new LearningQueueStatus(pending(), this.capacity, this.workerCount,
                 this.submitted.get(), this.processed.get(), this.failed.get(), this.rejected.get(),
-                this.rejectedMaxDocs.get(), this.maxDocs, currentDocs);
+                this.rejectedMaxDocs.get(), this.maxDocs, currentDocs, this.corrected.get(), this.uncorrectable.get());
     }
 
     /**
@@ -397,13 +503,19 @@ public final class LearningQueue implements AutoCloseable
      */
     public int pending()
     {
-        return this.queue.size();
+        int pending = 0;
+        for (BlockingQueue<TrainingTask> queue : this.queues)
+        {
+            pending += queue.size();
+        }
+
+        return pending;
     }
 
     @Override
     public void close()
     {
-        LOGGER.info("Draining learning queue ({} tasks pending)", this.queue.size());
+        LOGGER.info("Draining learning queue ({} tasks pending)", pending());
         this.accepting = false;
 
         // Give workers a chance to drain the backlog gracefully.
@@ -430,13 +542,115 @@ public final class LearningQueue implements AutoCloseable
 
         // Drain any tasks that slipped in after workers died or timed out.
         List<TrainingTask> remaining = new ArrayList<>();
-        this.queue.drainTo(remaining);
+        for (BlockingQueue<TrainingTask> queue : this.queues)
+        {
+            queue.drainTo(remaining);
+        }
         if (!remaining.isEmpty())
         {
             LOGGER.warn("Draining {} remaining tasks on shutdown thread", remaining.size());
             applyBatch(remaining);
         }
 
-        LOGGER.info("Learning queue stopped (processed={}, failed={}, rejected={})", this.processed.get(), this.failed.get(), this.rejected.get());
+        LOGGER.info("Learning queue stopped (processed={}, failed={}, rejected={}, corrected={}, uncorrectable={})",
+                this.processed.get(), this.failed.get(), this.rejected.get(), this.corrected.get(), this.uncorrectable.get());
+    }
+
+    /**
+     * Enables corrections: every training is recorded in the ledger, and a correction task removes the recorded
+     * trainings of its text before learning it with the corrected labels. Must be called before {@link #start()}.
+     *
+     * @param ledger the training ledger, or {@code null} to disable corrections
+     */
+    public void setTrainingLedger(TrainingLedger ledger)
+    {
+        this.ledger = ledger;
+    }
+
+    /**
+     * Returns the number of corrections that removed earlier trainings of their text.
+     *
+     * @return the number of corrections applied to known texts
+     */
+    public long corrected()
+    {
+        return this.corrected.get();
+    }
+
+    /**
+     * Returns the number of corrections of texts without recorded trainings (eg; learned before the ledger
+     * existed), which were only learned with the corrected labels.
+     *
+     * @return the number of corrections of unknown texts
+     */
+    public long uncorrectable()
+    {
+        return this.uncorrectable.get();
+    }
+
+    /**
+     * Removes the recorded trainings of a text from the model(s), reproducing the preprocessing each training used.
+     *
+     * @param rawText the text as it was submitted for training
+     * @param trainings the recorded trainings of the text
+     */
+    private void unlearn(String rawText, Map<TrainingLedger.Training, Long> trainings)
+    {
+        if (trainings.isEmpty())
+        {
+            this.uncorrectable.incrementAndGet();
+            return;
+        }
+
+        String text = preprocess(rawText);
+        for (Map.Entry<TrainingLedger.Training, Long> entry : trainings.entrySet())
+        {
+            TrainingLedger.Training training = entry.getKey();
+            String lang = training.languageCode();
+            Set<String> stop = lang.equals("und") ? this.stopWords.universal() : this.stopWords.forLanguage(lang);
+            if (this.languageModelManager != null)
+            {
+                this.languageModelManager.untrain(text, training.labels(), lang, stop, this.stopWords.universal(),
+                        training.globalTrained(), entry.getValue());
+            }
+            else
+            {
+                assert this.model != null;
+                this.model.untrain(text, training.labels(), stop, entry.getValue());
+            }
+        }
+
+        this.corrected.incrementAndGet();
+    }
+
+    /**
+     * Returns the partition a task is queued in. Every task of the same text goes to the same partition, which a
+     * single worker processes in order, so a correction is never applied before an earlier training of its text.
+     *
+     * @param task the task
+     * @return the queue of the partition
+     */
+    private BlockingQueue<TrainingTask> partition(TrainingTask task)
+    {
+        return this.queues.get(Math.floorMod(task.text().hashCode(), this.queues.size()));
+    }
+
+    /**
+     * Creates one bounded queue per worker, splitting the capacity between them.
+     *
+     * @param workerCount the number of workers
+     * @param capacity the total capacity
+     * @return the partition queues
+     */
+    private static List<BlockingQueue<TrainingTask>> partitions(int workerCount, int capacity)
+    {
+        List<BlockingQueue<TrainingTask>> queues = new ArrayList<>(workerCount);
+        int perWorker = Math.max(1, (capacity + workerCount - 1) / workerCount);
+        for (int i = 0; i < workerCount; i++)
+        {
+            queues.add(new ArrayBlockingQueue<>(perWorker));
+        }
+
+        return List.copyOf(queues);
     }
 }
