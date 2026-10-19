@@ -55,6 +55,24 @@ import net.nosial.bayesian_server.enums.Filters;
  * @param maxDocs maximum number of documents the model is allowed to learn;
  *                0 = unlimited. When reached, the server rejects new training
  *                requests (default: 0)
+ * @param corrections whether texts can be corrected with {@code PATCH /}, which records how every text was trained
+ *                    in a training ledger next to the model (default: true)
+ * @param modelType the classifier, {@code naive_bayes} or {@code logistic} (default: naive_bayes)
+ * @param placeholders whether links, mentions, phone numbers, prices, numbers and emoji become placeholder words before tokenization (default: false)
+ * @param placeholderRulesPath a file of placeholder rules applied before (or instead of) the default rules, or null (default: null)
+ * @param stopWords whether stop-words are removed (default: true)
+ * @param dedup whether learning a text again replaces its earlier labels instead of adding to them (default: false)
+ * @param hashBits logistic model: hash bits of each feature block (default: 18)
+ * @param retrainIntervalSeconds logistic model: seconds between checks for changed documents to retrain on (default: 60)
+ * @param targetFalsePositiveRate logistic model: false positive rate the decision thresholds are calibrated for (default: 0.05)
+ * @param regularization logistic model: L2 regularization strength (default: 1e-5)
+ * @param epochs logistic model: passes over the documents per training (default: 5)
+ * @param retrainThreads logistic model: threads featurizing the documents and training the labels on a retrain, 0 for one per processor (default: 0)
+ * @param featureCache logistic model: whether the features of the stored documents are kept in memory between retrains (default: true)
+ * @param implicitDelaySeconds logistic model: seconds a text classified with only its request's implicit label is held before it's learned with that label, 0 disables implicit learning (default: 0)
+ * @param implicitWeight logistic model: the weight of implicitly learned texts, in (0, 1) (default: 0.1)
+ * @param implicitCapacity logistic model: the maximum number of texts held for implicit learning (default: 1000000)
+ * @param embeddingModelPath logistic model: the directory of a sentence embedding model (model.onnx and tokenizer.json) whose classifier is averaged with the hashed features, or null (default: null)
  * @param amEnabled whether analytical monitoring is enabled (default: true)
  * @param amHistorySize maximum number of analytics entries to retain (default: 10000)
  * @param amCaptureRejected whether to capture rejected learning tasks in analytics (default: true)
@@ -101,6 +119,23 @@ public record ServerConfiguration(
         boolean mmlGlobalTraining,
         long mmlMinLabelDocs,
         long maxDocs,
+        boolean corrections,
+        String modelType,
+        boolean placeholders,
+        Path placeholderRulesPath,
+        boolean stopWords,
+        boolean dedup,
+        int hashBits,
+        long retrainIntervalSeconds,
+        double targetFalsePositiveRate,
+        double regularization,
+        int epochs,
+        int retrainThreads,
+        boolean featureCache,
+        long implicitDelaySeconds,
+        double implicitWeight,
+        int implicitCapacity,
+        Path embeddingModelPath,
         boolean amEnabled,
         int amHistorySize,
         boolean amCaptureRejected,
@@ -158,6 +193,23 @@ public record ServerConfiguration(
         private boolean mmlGlobalTraining = true;
         private long mmlMinLabelDocs = 10;
         private long maxDocs = 0;
+        private boolean corrections = true;
+        private String modelType = "naive_bayes";
+        private boolean placeholders = false;
+        private Path placeholderRulesPath = null;
+        private boolean stopWords = true;
+        private boolean dedup = false;
+        private int hashBits = 18;
+        private long retrainIntervalSeconds = 60;
+        private double targetFalsePositiveRate = 0.05;
+        private double regularization = 1e-5;
+        private int epochs = 5;
+        private int retrainThreads = 0;
+        private boolean featureCache = true;
+        private long implicitDelaySeconds = 0;
+        private double implicitWeight = 0.1;
+        private int implicitCapacity = 1_000_000;
+        private Path embeddingModelPath = null;
         private boolean amEnabled = true;
         private int amHistorySize = 10_000;
         private boolean amCaptureRejected = true;
@@ -546,6 +598,213 @@ public record ServerConfiguration(
         }
 
         /**
+         * Sets whether texts can be corrected with {@code PATCH /}. Every training is then recorded in a training
+         * ledger (about 100 bytes per distinct text) so that a correction can remove it exactly.
+         *
+         * @param v {@code true} to enable corrections
+         * @return this builder for chaining
+         */
+        public Builder corrections(boolean v)
+        {
+            this.corrections = v;
+            return this;
+        }
+
+        /**
+         * Sets the classifier, {@code naive_bayes} or {@code logistic}.
+         *
+         * @param v the value
+         * @return this builder for chaining
+         */
+        public Builder modelType(String v)
+        {
+            this.modelType = v;
+            return this;
+        }
+
+        /**
+         * Sets whether links, mentions, phone numbers, prices, numbers and emoji become placeholder words before tokenization.
+         *
+         * @param v the value
+         * @return this builder for chaining
+         */
+        public Builder placeholders(boolean v)
+        {
+            this.placeholders = v;
+            return this;
+        }
+
+        /**
+         * Sets a file of placeholder rules applied before (or instead of) the default rules, or null.
+         *
+         * @param v the value
+         * @return this builder for chaining
+         */
+        public Builder placeholderRulesPath(Path v)
+        {
+            this.placeholderRulesPath = v;
+            return this;
+        }
+
+        /**
+         * Sets whether stop-words are removed.
+         *
+         * @param v the value
+         * @return this builder for chaining
+         */
+        public Builder stopWords(boolean v)
+        {
+            this.stopWords = v;
+            return this;
+        }
+
+        /**
+         * Sets whether learning a text again replaces its earlier labels instead of adding to them.
+         *
+         * @param v the value
+         * @return this builder for chaining
+         */
+        public Builder dedup(boolean v)
+        {
+            this.dedup = v;
+            return this;
+        }
+
+        /**
+         * Sets logistic model: hash bits of each feature block.
+         *
+         * @param v the value
+         * @return this builder for chaining
+         */
+        public Builder hashBits(int v)
+        {
+            this.hashBits = v;
+            return this;
+        }
+
+        /**
+         * Sets logistic model: seconds between checks for changed documents to retrain on.
+         *
+         * @param v the value
+         * @return this builder for chaining
+         */
+        public Builder retrainIntervalSeconds(long v)
+        {
+            this.retrainIntervalSeconds = v;
+            return this;
+        }
+
+        /**
+         * Sets logistic model: false positive rate the decision thresholds are calibrated for.
+         *
+         * @param v the value
+         * @return this builder for chaining
+         */
+        public Builder targetFalsePositiveRate(double v)
+        {
+            this.targetFalsePositiveRate = v;
+            return this;
+        }
+
+        /**
+         * Sets logistic model: L2 regularization strength.
+         *
+         * @param v the value
+         * @return this builder for chaining
+         */
+        public Builder regularization(double v)
+        {
+            this.regularization = v;
+            return this;
+        }
+
+        /**
+         * Sets logistic model: passes over the documents per training.
+         *
+         * @param v the value
+         * @return this builder for chaining
+         */
+        public Builder epochs(int v)
+        {
+            this.epochs = v;
+            return this;
+        }
+
+        /**
+         * Sets logistic model: threads featurizing the documents and training the labels on a retrain, 0 for one per
+         * processor.
+         *
+         * @param v the value
+         * @return this builder for chaining
+         */
+        public Builder retrainThreads(int v)
+        {
+            this.retrainThreads = v;
+            return this;
+        }
+
+        /**
+         * Sets logistic model: whether the features of the stored documents are kept in memory between retrains.
+         *
+         * @param v the value
+         * @return this builder for chaining
+         */
+        public Builder featureCache(boolean v)
+        {
+            this.featureCache = v;
+            return this;
+        }
+
+        /**
+         * Sets logistic model: seconds a text classified with only its request's implicit label is held before it's
+         * learned with that label, 0 disables implicit learning.
+         *
+         * @param v the value
+         * @return this builder for chaining
+         */
+        public Builder implicitDelaySeconds(long v)
+        {
+            this.implicitDelaySeconds = v;
+            return this;
+        }
+
+        /**
+         * Sets logistic model: the weight of implicitly learned texts, in (0, 1).
+         *
+         * @param v the value
+         * @return this builder for chaining
+         */
+        public Builder implicitWeight(double v)
+        {
+            this.implicitWeight = v;
+            return this;
+        }
+
+        /**
+         * Sets logistic model: the maximum number of texts held for implicit learning.
+         *
+         * @param v the value
+         * @return this builder for chaining
+         */
+        public Builder implicitCapacity(int v)
+        {
+            this.implicitCapacity = v;
+            return this;
+        }
+
+        /**
+         * Sets logistic model: the directory of a sentence embedding model (model.onnx and tokenizer.json), or null.
+         *
+         * @param v the value
+         * @return this builder for chaining
+         */
+        public Builder embeddingModelPath(Path v)
+        {
+            this.embeddingModelPath = v;
+            return this;
+        }
+
+        /**
          * Sets whether analytical monitoring is enabled.
          *
          * @param v {@code true} to enable analytical monitoring
@@ -617,20 +876,24 @@ public record ServerConfiguration(
          * Sets the optional filesystem path for the training archive CSV.
          *
          * @param v the archive file path, or {@code null} to disable archiving
+         * @return this builder for chaining
          */
-        public void archivePath(Path v)
+        public Builder archivePath(Path v)
         {
             this.archivePath = v;
+            return this;
         }
 
         /**
          * Sets the optional filesystem path for the classification data log CSV.
          *
          * @param v the data log file path, or {@code null} to disable the data log
+         * @return this builder for chaining
          */
-        public void datalogPath(Path v)
+        public Builder datalogPath(Path v)
         {
             this.datalogPath = v;
+            return this;
         }
 
         /**
@@ -649,7 +912,7 @@ public record ServerConfiguration(
                     this.requestReadTimeoutMillis, this.minTokenLength, this.maxTokenLength, this.cjkBigrams, this.memoryLimitMB, this.readOnly,
                     this.useLabelChain, this.priorWeight, this.useComplement, this.useTfIdf, this.useBm25, this.bm25K1,
                     this.bm25B, this.useOnlineLR, this.lrInitialLearningRate, this.lrDecayRate, this.mml,
-                    this.mmlConfidenceThreshold, this.mmlGlobalTraining, this.mmlMinLabelDocs, this.maxDocs, this.amEnabled, this.amHistorySize, this.amCaptureRejected,
+                    this.mmlConfidenceThreshold, this.mmlGlobalTraining, this.mmlMinLabelDocs, this.maxDocs, this.corrections, this.modelType, this.placeholders, this.placeholderRulesPath, this.stopWords, this.dedup, this.hashBits, this.retrainIntervalSeconds, this.targetFalsePositiveRate, this.regularization, this.epochs, this.retrainThreads, this.featureCache, this.implicitDelaySeconds, this.implicitWeight, this.implicitCapacity, this.embeddingModelPath, this.amEnabled, this.amHistorySize, this.amCaptureRejected,
                     this.amCaptureClassification, this.filters, this.logLevel
             );
         }
@@ -774,6 +1037,81 @@ public record ServerConfiguration(
             if (this.maxDocs < 0)
             {
                 throw new IllegalArgumentException("maxDocs must be >= 0");
+            }
+
+            if (!"naive_bayes".equals(this.modelType) && !"logistic".equals(this.modelType))
+            {
+                throw new IllegalArgumentException("modelType must be naive_bayes or logistic, got " + this.modelType);
+            }
+
+            if ("logistic".equals(this.modelType) && this.mml)
+            {
+                throw new IllegalArgumentException("mml is not supported with the logistic model, it learns every language in one model");
+            }
+
+            if (this.dedup && "naive_bayes".equals(this.modelType) && !this.corrections)
+            {
+                throw new IllegalArgumentException("dedup requires corrections with the naive_bayes model");
+            }
+
+            if (this.hashBits < 8 || this.hashBits > 26)
+            {
+                throw new IllegalArgumentException("hashBits must be in [8, 26]");
+            }
+
+            if (this.retrainIntervalSeconds < 1)
+            {
+                throw new IllegalArgumentException("retrainIntervalSeconds must be >= 1");
+            }
+
+            if (this.targetFalsePositiveRate <= 0 || this.targetFalsePositiveRate >= 1)
+            {
+                throw new IllegalArgumentException("targetFalsePositiveRate must be in (0, 1)");
+            }
+
+            if (this.regularization <= 0)
+            {
+                throw new IllegalArgumentException("regularization must be > 0");
+            }
+
+            if (this.epochs < 1)
+            {
+                throw new IllegalArgumentException("epochs must be >= 1");
+            }
+
+            if (this.retrainThreads < 0)
+            {
+                throw new IllegalArgumentException("retrainThreads must be >= 0");
+            }
+
+            if (this.implicitDelaySeconds < 0)
+            {
+                throw new IllegalArgumentException("implicitDelaySeconds must be >= 0");
+            }
+
+            if (!(this.implicitWeight > 0.0) || this.implicitWeight >= 1.0)
+            {
+                throw new IllegalArgumentException("implicitWeight must be in (0, 1)");
+            }
+
+            if (this.implicitCapacity < 1)
+            {
+                throw new IllegalArgumentException("implicitCapacity must be >= 1");
+            }
+
+            if (this.placeholderRulesPath != null && !this.placeholders)
+            {
+                throw new IllegalArgumentException("placeholder rules (placeholderRulesPath) require placeholders");
+            }
+
+            if (this.embeddingModelPath != null && !"logistic".equals(this.modelType))
+            {
+                throw new IllegalArgumentException("an embedding model (embeddingModelPath) requires the logistic model");
+            }
+
+            if (this.implicitDelaySeconds > 0 && !"logistic".equals(this.modelType))
+            {
+                throw new IllegalArgumentException("implicit learning (implicitDelaySeconds) requires the logistic model");
             }
 
             if (this.amHistorySize < 1)

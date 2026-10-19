@@ -18,11 +18,14 @@ public final class Scheduler implements AutoCloseable
 
     private final NaiveBayesModel model;
     private final LanguageModelManager languageModelManager;
+    private final LogisticModel logisticModel;
     private final ModelStoreInterface store;
     private final Path modelPath;
     private final long intervalSeconds;
     private final ScheduledExecutorService scheduler;
     private final AtomicLong lastSavedVersion = new AtomicLong(Long.MIN_VALUE);
+    private volatile TrainingLedger ledger;
+    private volatile Path ledgerFile;
 
     /**
      * Creates a new persistence scheduler for single-model mode.
@@ -35,6 +38,7 @@ public final class Scheduler implements AutoCloseable
     {
         this.model = model;
         this.languageModelManager = null;
+        this.logisticModel = null;
         this.store = store;
         this.modelPath = null;
         this.intervalSeconds = intervalSeconds;
@@ -52,6 +56,7 @@ public final class Scheduler implements AutoCloseable
     {
         this.model = null;
         this.languageModelManager = languageModelManager;
+        this.logisticModel = null;
         this.store = null;
         this.modelPath = modelPath;
         this.intervalSeconds = intervalSeconds;
@@ -59,12 +64,32 @@ public final class Scheduler implements AutoCloseable
     }
 
     /**
-     * Records the version that is already on disk so the first tick does not re-save a just-loaded model.
+     * Creates a scheduler persisting the logistic model's documents and weights to the model directory.
+     *
+     * @param logisticModel the logistic model
+     * @param modelPath the model directory
+     * @param intervalSeconds the save interval, 0 disables periodic saves
      */
+    public Scheduler(LogisticModel logisticModel, Path modelPath, long intervalSeconds)
+    {
+        this.model = null;
+        this.languageModelManager = null;
+        this.logisticModel = logisticModel;
+        this.store = null;
+        this.modelPath = modelPath;
+        this.intervalSeconds = intervalSeconds;
+        this.scheduler = Executors.newSingleThreadScheduledExecutor(new NamedThreadFactory("model-persistence"));
+    }
+
+    private long currentVersion()
+    {
+        return this.languageModelManager != null ? this.languageModelManager.version()
+                : this.logisticModel != null ? this.logisticModel.persistenceVersion() : this.model.version();
+    }
+
     public void markPersisted()
     {
-        long v = this.languageModelManager != null ? this.languageModelManager.version() : this.model.version();
-        this.lastSavedVersion.set(v);
+        this.lastSavedVersion.set(currentVersion());
     }
 
     /**
@@ -92,7 +117,7 @@ public final class Scheduler implements AutoCloseable
     {
         try
         {
-            long current = this.languageModelManager != null ? this.languageModelManager.version() : this.model.version();
+            long current = currentVersion();
             if (current == this.lastSavedVersion.get())
             {
                 return;
@@ -118,7 +143,22 @@ public final class Scheduler implements AutoCloseable
      */
     public void saveNow() throws IOException
     {
-        if (this.languageModelManager != null)
+        // The ledger is written before the model: a crash in between leaves trainings the ledger does not know,
+        // which a correction then only learns again, rather than ledger entries the saved model does not contain,
+        // which a correction would remove from other documents' counts
+        TrainingLedger trainingLedger = this.ledger;
+        if (trainingLedger != null)
+        {
+            trainingLedger.save(this.ledgerFile);
+        }
+
+        if (this.logisticModel != null)
+        {
+            long current = this.logisticModel.persistenceVersion();
+            this.logisticModel.save(this.modelPath);
+            this.lastSavedVersion.set(current);
+        }
+        else if (this.languageModelManager != null)
         {
             long current = this.languageModelManager.version();
             this.languageModelManager.saveAll(this.modelPath);
@@ -130,6 +170,18 @@ public final class Scheduler implements AutoCloseable
             this.store.save(this.model);
             this.lastSavedVersion.set(this.model.version());
         }
+    }
+
+    /**
+     * Saves the training ledger with the model on every save.
+     *
+     * @param ledger the training ledger
+     * @param file the file the ledger is saved to
+     */
+    public void setTrainingLedger(TrainingLedger ledger, Path file)
+    {
+        this.ledger = ledger;
+        this.ledgerFile = file;
     }
 
     @Override

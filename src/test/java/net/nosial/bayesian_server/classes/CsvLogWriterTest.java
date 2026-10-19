@@ -82,11 +82,10 @@ class CsvLogWriterTest
         Path file = dir.resolve("not-a-file");
         Files.createDirectory(file);
 
-        try (CsvLogWriter writer = new CsvLogWriter(file, "labels,content", 10, "test-writer"))
-        {
-            assertTrue(writer.offer("spam,row"));
-            writer.close();
-            assertEquals(1, writer.droppedCount());
-        }
+        CsvLogWriter writer = new CsvLogWriter(file, "labels,content", 10, "test-writer");
+        assertTrue(writer.offer("spam,row"));
+        writer.close();
+
+        assertEquals(1, writer.droppedCount());
     }
 }

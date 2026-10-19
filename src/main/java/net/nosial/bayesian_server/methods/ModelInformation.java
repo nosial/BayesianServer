@@ -4,6 +4,7 @@ import net.nosial.bayesian_server.interfaces.ApiHandlerInterface;
 import net.nosial.bayesian_server.records.ServerConfiguration;
 import net.nosial.bayesian_server.classes.LanguageModelManager;
 import net.nosial.bayesian_server.classes.LearningQueue;
+import net.nosial.bayesian_server.classes.LogisticModel;
 import net.nosial.bayesian_server.classes.NaiveBayesModel;
 import net.nosial.bayesian_server.records.ApiRequest;
 import net.nosial.bayesian_server.records.ApiResponse;
@@ -14,6 +15,7 @@ public final class ModelInformation implements ApiHandlerInterface
 {
     private final NaiveBayesModel model;
     private final LanguageModelManager languageModelManager;
+    private final LogisticModel logisticModel;
     private final LearningQueue learningQueue;
     private final ServerConfiguration config;
     private final long startMillis;
@@ -30,6 +32,7 @@ public final class ModelInformation implements ApiHandlerInterface
                         ServerConfiguration config, long startMillis) {
         this.model = model;
         this.languageModelManager = null;
+        this.logisticModel = null;
         this.learningQueue = learningQueue;
         this.config = config;
         this.startMillis = startMillis;
@@ -47,6 +50,25 @@ public final class ModelInformation implements ApiHandlerInterface
     {
         this.model = null;
         this.languageModelManager = languageModelManager;
+        this.logisticModel = null;
+        this.learningQueue = learningQueue;
+        this.config = config;
+        this.startMillis = startMillis;
+    }
+
+    /**
+     * Creates the diagnostics handler for the logistic model.
+     *
+     * @param logisticModel the logistic model
+     * @param learningQueue the learning queue
+     * @param config the server configuration
+     * @param startMillis the server start time
+     */
+    public ModelInformation(LogisticModel logisticModel, LearningQueue learningQueue, ServerConfiguration config, long startMillis)
+    {
+        this.model = null;
+        this.languageModelManager = null;
+        this.logisticModel = logisticModel;
         this.learningQueue = learningQueue;
         this.config = config;
         this.startMillis = startMillis;
@@ -63,7 +85,17 @@ public final class ModelInformation implements ApiHandlerInterface
         long modelMemoryLimitBytes;
         ModelStatistics stats;
 
-        if (this.languageModelManager != null)
+        java.util.Map<String, Double> thresholds = java.util.Map.of();
+        java.util.Map<String, Double> negativeThresholds = java.util.Map.of();
+        if (this.logisticModel != null)
+        {
+            stats = this.logisticModel.statistics();
+            modelMemoryBytes = (long) stats.labelCount() * (2L << config.hashBits()) * Float.BYTES;
+            modelMemoryLimitBytes = 0;
+            thresholds = calibrated(this.logisticModel.thresholds());
+            negativeThresholds = calibrated(this.logisticModel.negativeThresholds());
+        }
+        else if (this.languageModelManager != null)
         {
             modelMemoryBytes = this.languageModelManager.estimateMemoryBytes();
             modelMemoryLimitBytes = this.languageModelManager.memoryLimitBytes();
@@ -89,7 +121,10 @@ public final class ModelInformation implements ApiHandlerInterface
                 modelMemoryLimitBytes,
                 config.readOnly(),
                 config.mml(),
-                config.mmlConfidenceThreshold()
+                config.mmlConfidenceThreshold(),
+                config.modelType(),
+                thresholds,
+                negativeThresholds
         );
 
         ModelInfoResponse response = new ModelInfoResponse(
@@ -100,6 +135,23 @@ public final class ModelInformation implements ApiHandlerInterface
         );
 
         return ApiResponse.ok(response);
+    }
+
+    /**
+     * Returns the calibrated thresholds by label, leaving out the labels without a calibrated threshold.
+     */
+    private static java.util.Map<String, Double> calibrated(java.util.Map<String, Double> thresholds)
+    {
+        java.util.Map<String, Double> calibrated = new java.util.LinkedHashMap<>();
+        thresholds.forEach((label, threshold) ->
+        {
+            if (!threshold.isNaN())
+            {
+                calibrated.put(label, threshold);
+            }
+        });
+
+        return calibrated;
     }
 
     /**
@@ -132,6 +184,11 @@ public final class ModelInformation implements ApiHandlerInterface
          * @param readOnly whether the server is in read-only mode
          * @param mml whether multi-model language mode is enabled
          * @param mmlConfidenceThreshold detection confidence threshold for MML routing
+         * @param modelType the classifier, {@code naive_bayes} or {@code logistic}
+         * @param calibratedThresholds logistic model: the calibrated label threshold of every label (on P(label))
+         * @param negativeThresholds logistic model: the calibrated negative threshold of every label (on
+         *                           1 - P(label)), applied when the label is the {@code negative_label} of a
+         *                           classification
          */
         record ServerInfo(
                 double defaultThreshold,
@@ -145,7 +202,10 @@ public final class ModelInformation implements ApiHandlerInterface
                 long modelMemoryLimitBytes,
                 boolean readOnly,
                 boolean mml,
-                double mmlConfidenceThreshold) {
+                double mmlConfidenceThreshold,
+                String modelType,
+                java.util.Map<String, Double> calibratedThresholds,
+                java.util.Map<String, Double> negativeThresholds) {
         }
     }
 }

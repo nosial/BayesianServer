@@ -13,6 +13,8 @@ package net.nosial.bayesian_server.records;
  * @param rejectedMaxDocs tasks refused because the max-docs limit was reached since startup
  * @param maxDocs maximum documents the model may learn; 0 = unlimited
  * @param currentDocs current total documents learned across all models
+ * @param corrected corrections that removed earlier trainings of their text since startup
+ * @param uncorrectable corrections of texts without recorded trainings (only learned with the corrected labels) since startup
  */
 public record LearningQueueStatus(
         int pending,
@@ -24,4 +26,6 @@ public record LearningQueueStatus(
         long rejected,
         long rejectedMaxDocs,
         long maxDocs,
-        long currentDocs) { }
+        long currentDocs,
+        long corrected,
+        long uncorrectable) { }

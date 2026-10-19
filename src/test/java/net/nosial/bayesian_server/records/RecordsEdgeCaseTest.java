@@ -617,7 +617,7 @@ class RecordsEdgeCaseTest
     @Test
     void learningQueueStatusShouldAcceptZeroValues()
     {
-        LearningQueueStatus status = new LearningQueueStatus(0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+        LearningQueueStatus status = new LearningQueueStatus(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
         assertEquals(0, status.pending());
         assertEquals(0, status.processed());
     }
@@ -626,7 +626,7 @@ class RecordsEdgeCaseTest
     void learningQueueStatusShouldAcceptNegativePending()
     {
         // Record allows any int; negative pending is semantically odd but structurally valid
-        LearningQueueStatus status = new LearningQueueStatus(-1, 10, 2, 0, 0, 0, 0, 0, 0, 0);
+        LearningQueueStatus status = new LearningQueueStatus(-1, 10, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0);
         assertEquals(-1, status.pending());
     }
 
@@ -635,7 +635,7 @@ class RecordsEdgeCaseTest
     {
         LearningQueueStatus status = new LearningQueueStatus(Integer.MAX_VALUE, Integer.MAX_VALUE,
                 Integer.MAX_VALUE, Long.MAX_VALUE, Long.MAX_VALUE, Long.MAX_VALUE, Long.MAX_VALUE,
-                Long.MAX_VALUE, Long.MAX_VALUE, Long.MAX_VALUE);
+                Long.MAX_VALUE, Long.MAX_VALUE, Long.MAX_VALUE, 0, 0);
         assertEquals(Long.MAX_VALUE, status.submitted());
     }
 

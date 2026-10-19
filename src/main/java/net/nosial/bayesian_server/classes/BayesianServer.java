@@ -2,6 +2,7 @@ package net.nosial.bayesian_server.classes;
 
 import net.nosial.bayesian_server.classes.http.HttpApiServer;
 import net.nosial.bayesian_server.classes.http.HttpRouter;
+import net.nosial.bayesian_server.enums.Filters;
 import net.nosial.bayesian_server.interfaces.ModelStoreInterface;
 import net.nosial.bayesian_server.interfaces.TokenizerInterface;
 import net.nosial.bayesian_server.methods.*;
@@ -21,6 +22,7 @@ public final class BayesianServer implements AutoCloseable
 
     private final ServerConfiguration config;
     private final NaiveBayesModel model;
+    private final LogisticModel logisticModel;
     private final LanguageModelManager languageModelManager;
     private final ModelStoreInterface store;
     private final LearningQueue learningQueue;
@@ -28,6 +30,10 @@ public final class BayesianServer implements AutoCloseable
     private final HttpApiServer httpServer;
     private final CsvLogWriter archive;
     private final CsvLogWriter datalog;
+    private final ImplicitLearner implicitLearner;
+    private EmbeddingModel embeddingModel;
+    private final TrainingLedger ledger;
+    private final Path ledgerFile;
     private final CountDownLatch shutdownLatch = new CountDownLatch(1);
     private final AtomicBoolean closed = new AtomicBoolean(false);
 
@@ -40,16 +46,88 @@ public final class BayesianServer implements AutoCloseable
     {
         long startMillis = System.currentTimeMillis();
         TokenizerInterface tokenizer = new UnicodeTokenizer(config.minTokenLength(), config.maxTokenLength(), config.cjkBigrams());
-        StopWordRegistry stopWords = new StopWordRegistry();
+        StopWordRegistry stopWords = new StopWordRegistry(config.stopWords());
         LanguageDetection languageDetection = new LanguageDetection();
         AnalyticalMonitoring monitoring = new AnalyticalMonitoring(
                 config.amEnabled(), config.amHistorySize(), config.amCaptureRejected(), config.amCaptureClassification());
 
         this.config = config;
         this.archive = config.archivePath() == null ? null
-                : new CsvLogWriter(config.archivePath(), "labels,content", CsvLogWriter.DEFAULT_CAPACITY, "archive-writer");
+                // Lossless: the archive must hold every document the model learned, it's what a model is rebuilt from
+                : new CsvLogWriter(config.archivePath(), "labels,content,weight", CsvLogWriter.LOSSLESS_CAPACITY, "archive-writer", true);
         this.datalog = config.datalogPath() == null ? null
-                : new CsvLogWriter(config.datalogPath(), "labels,content", CsvLogWriter.DEFAULT_CAPACITY, "datalog-writer");
+                : new CsvLogWriter(config.datalogPath(), ClassificationHandler.DATALOG_HEADER, CsvLogWriter.DEFAULT_CAPACITY, "datalog-writer");
+        if (this.datalog != null)
+        {
+            // Data logs written before the probabilities were logged are moved aside
+            this.datalog.setRotateOnHeaderChange(true);
+        }
+        Path absoluteModelPath = config.modelPath().toAbsolutePath();
+        this.ledgerFile = absoluteModelPath.resolveSibling(absoluteModelPath.getFileName() + ".ledger");
+        boolean logistic = "logistic".equals(config.modelType());
+        ChatNormalizer normalizer = createNormalizer(config);
+        Object placeholders = normalizer == null ? false : normalizer.fingerprint();
+        this.ledger = config.corrections() && !config.readOnly() && !logistic
+                ? new TrainingLedger(TrainingLedger.fingerprint(java.util.List.of("v2", config.filters(), config.minTokenLength(),
+                        config.maxTokenLength(), config.cjkBigrams(), config.mml(), config.mmlConfidenceThreshold(),
+                        placeholders, config.stopWords(), stopWords.universal().size())))
+                : null;
+
+        if (logistic)
+        {
+            // The logistic model keeps every document and retrains from them, so it needs no ledger: learning a
+            // text again (PUSH with --dedup, or PATCH) replaces its labels
+            java.util.function.UnaryOperator<String> preprocessor = raw ->
+            {
+                String text = normalizer != null ? normalizer.apply(raw) : raw;
+                return Filters.filter(text, config.filters());
+            };
+            this.logisticModel = new LogisticModel(tokenizer, preprocessor, stopWords.universal(), config.hashBits(),
+                    config.regularization(), config.epochs(), config.targetFalsePositiveRate(),
+                    TrainingLedger.fingerprint(java.util.List.of("v1", config.filters(), config.minTokenLength(),
+                            config.maxTokenLength(), config.cjkBigrams(), placeholders, config.stopWords())));
+            this.logisticModel.setRetrainThreads(config.retrainThreads() > 0 ? config.retrainThreads() : Runtime.getRuntime().availableProcessors());
+            this.logisticModel.setFeatureCache(config.featureCache());
+            this.languageModelManager = null;
+            this.model = null;
+            this.store = null;
+            this.learningQueue = new LearningQueue(this.logisticModel, config.learnerThreads(), config.learnQueueCapacity(), config.maxDocs());
+            this.learningQueue.setAnalyticalMonitoring(monitoring);
+            this.scheduler = new Scheduler(this.logisticModel, config.modelPath(), config.saveIntervalSeconds());
+            this.implicitLearner = config.implicitDelaySeconds() > 0 && !config.readOnly()
+                    ? new ImplicitLearner(this.learningQueue, this.logisticModel, this.archive, config.implicitDelaySeconds(),
+                            config.implicitWeight(), config.implicitCapacity(), config.modelPath().resolve("implicit.bin"))
+                    : null;
+            ClassificationHandler classificationHandler = new ClassificationHandler(this.logisticModel, config, languageDetection);
+            classificationHandler.setAnalyticalMonitoring(monitoring);
+            classificationHandler.setDatalog(this.datalog);
+            classificationHandler.setNormalizer(normalizer);
+            classificationHandler.setImplicitLearner(this.implicitLearner);
+            LearningHandler pushHandler = new LearningHandler(this.learningQueue, config.readOnly(), this.archive, false, config.dedup());
+            LearningHandler forgetHandler = LearningHandler.forgetting(this.learningQueue, config.readOnly(), this.archive);
+            pushHandler.setImplicitLearner(this.implicitLearner);
+            forgetHandler.setImplicitLearner(this.implicitLearner);
+            HttpRouter httpRouter = new HttpRouter()
+                    .register("GET", "/", new ModelInformation(this.logisticModel, this.learningQueue, config, startMillis))
+                    .register("POST", "/", classificationHandler)
+                    .register("PUSH", "/", pushHandler)
+                    .register("DELETE", "/", forgetHandler)
+                    .register("GET", "/health", new HealthHandler())
+                    .register("GET", "/analytics", new AnalyticsHandler(monitoring))
+                    .register("POST", "/analytics", new AnalyticsHandler(monitoring));
+            if (config.corrections())
+            {
+                LearningHandler correctionHandler = new LearningHandler(this.learningQueue, config.readOnly(), this.archive, true);
+                correctionHandler.setImplicitLearner(this.implicitLearner);
+                httpRouter.register("PATCH", "/", correctionHandler);
+            }
+
+            this.httpServer = new HttpApiServer(config, httpRouter);
+            return;
+        }
+
+        this.logisticModel = null;
+        this.implicitLearner = null;
 
         if (config.mml())
         {
@@ -66,17 +144,30 @@ public final class BayesianServer implements AutoCloseable
                     config.mmlConfidenceThreshold(), config.maxDocs(), this.languageModelManager::totalDocumentCount,
                     languageDetection, config.filters());
             this.learningQueue.setAnalyticalMonitoring(monitoring);
+            this.learningQueue.setTrainingLedger(this.ledger);
+            this.learningQueue.setNormalizer(normalizer);
             this.scheduler = new Scheduler(this.languageModelManager, config.modelPath(), config.saveIntervalSeconds());
+            if (this.ledger != null)
+            {
+                this.scheduler.setTrainingLedger(this.ledger, this.ledgerFile);
+            }
             ClassificationHandler classificationHandler = new ClassificationHandler(this.languageModelManager, config, languageDetection, stopWords);
             classificationHandler.setAnalyticalMonitoring(monitoring);
             classificationHandler.setDatalog(this.datalog);
+            classificationHandler.setNormalizer(normalizer);
             HttpRouter httpRouter = new HttpRouter()
                     .register("GET", "/", new ModelInformation(this.languageModelManager, this.learningQueue, config, startMillis))
                     .register("POST", "/", classificationHandler)
-                    .register("PUSH", "/", new LearningHandler(this.learningQueue, config.readOnly(), this.archive))
+                    .register("PUSH", "/", new LearningHandler(this.learningQueue, config.readOnly(), this.archive, false, config.dedup()))
                     .register("GET", "/health", new HealthHandler())
                     .register("GET", "/analytics", new AnalyticsHandler(monitoring))
                     .register("POST", "/analytics", new AnalyticsHandler(monitoring));
+            if (this.ledger != null)
+            {
+                // The trainings of a text can only be removed when the ledger recorded them
+                httpRouter.register("PATCH", "/", new LearningHandler(this.learningQueue, config.readOnly(), this.archive, true));
+                httpRouter.register("DELETE", "/", LearningHandler.forgetting(this.learningQueue, config.readOnly(), this.archive));
+            }
             this.httpServer = new HttpApiServer(config, httpRouter);
         }
         else
@@ -91,18 +182,55 @@ public final class BayesianServer implements AutoCloseable
                     0.35, config.maxDocs(), this.model::totalDocumentCount,
                     languageDetection, config.filters());
             this.learningQueue.setAnalyticalMonitoring(monitoring);
+            this.learningQueue.setTrainingLedger(this.ledger);
+            this.learningQueue.setNormalizer(normalizer);
             this.scheduler = new Scheduler(this.model, this.store, config.saveIntervalSeconds());
+            if (this.ledger != null)
+            {
+                this.scheduler.setTrainingLedger(this.ledger, this.ledgerFile);
+            }
             ClassificationHandler classificationHandler = new ClassificationHandler(this.model, config, languageDetection, stopWords);
             classificationHandler.setAnalyticalMonitoring(monitoring);
             classificationHandler.setDatalog(this.datalog);
+            classificationHandler.setNormalizer(normalizer);
             HttpRouter httpRouter = new HttpRouter()
                     .register("GET", "/", new ModelInformation(this.model, this.learningQueue, config, startMillis))
                     .register("POST", "/", classificationHandler)
-                    .register("PUSH", "/", new LearningHandler(this.learningQueue, config.readOnly(), this.archive))
+                    .register("PUSH", "/", new LearningHandler(this.learningQueue, config.readOnly(), this.archive, false, config.dedup()))
                     .register("GET", "/health", new HealthHandler())
                     .register("GET", "/analytics", new AnalyticsHandler(monitoring))
                     .register("POST", "/analytics", new AnalyticsHandler(monitoring));
+            if (this.ledger != null)
+            {
+                // The trainings of a text can only be removed when the ledger recorded them
+                httpRouter.register("PATCH", "/", new LearningHandler(this.learningQueue, config.readOnly(), this.archive, true));
+                httpRouter.register("DELETE", "/", LearningHandler.forgetting(this.learningQueue, config.readOnly(), this.archive));
+            }
             this.httpServer = new HttpApiServer(config, httpRouter);
+        }
+    }
+
+    /**
+     * Creates the normalizer of the placeholders, with the configured placeholder rules
+     *
+     * @param config The server configuration
+     * @return The normalizer, null without placeholders
+     * @throws IllegalArgumentException If the placeholder rules can't be read or are invalid
+     */
+    private static ChatNormalizer createNormalizer(ServerConfiguration config)
+    {
+        if (!config.placeholders())
+        {
+            return null;
+        }
+
+        try
+        {
+            return ChatNormalizer.load(config.placeholderRulesPath());
+        }
+        catch (IOException e)
+        {
+            throw new IllegalArgumentException("Failed to read the placeholder rules " + config.placeholderRulesPath() + ": " + e.getMessage(), e);
         }
     }
 
@@ -116,7 +244,40 @@ public final class BayesianServer implements AutoCloseable
     {
         LOGGER.info("Starting BayesianServer");
 
-        if (this.config.mml())
+        if (this.logisticModel != null)
+        {
+            Path modelPath = this.config.modelPath();
+            if (Files.exists(modelPath) && !Files.isDirectory(modelPath))
+            {
+                throw new IOException("The --model parameter must be pointing to a folder, but path '" + modelPath + "' is an existing file.");
+            }
+
+            if (this.config.embeddingModelPath() != null)
+            {
+                // Before loading, weights trained without this embedding model are retrained
+                this.embeddingModel = new EmbeddingModel(this.config.embeddingModelPath());
+                this.logisticModel.setEmbeddingModel(this.embeddingModel);
+            }
+
+            if (!this.logisticModel.load(modelPath))
+            {
+                LOGGER.info("No logistic model found at {}; starting a new model", modelPath);
+            }
+
+            if (!this.config.readOnly())
+            {
+                this.logisticModel.startRetraining(this.config.retrainIntervalSeconds());
+                this.learningQueue.start();
+                this.scheduler.markPersisted();
+                this.scheduler.start();
+                if (this.implicitLearner != null)
+                {
+                    this.implicitLearner.load();
+                    this.implicitLearner.start();
+                }
+            }
+        }
+        else if (this.config.mml())
         {
             Path modelPath = this.config.modelPath();
             if (Files.exists(modelPath) && !Files.isDirectory(modelPath))
@@ -146,6 +307,7 @@ public final class BayesianServer implements AutoCloseable
                             Utilities.formatBytes((long) this.config.memoryLimitMB() * 1024 * 1024));
                 }
 
+                loadLedger(this.languageModelManager.totalDocumentCount());
                 this.learningQueue.start();
                 this.scheduler.markPersisted();
                 this.scheduler.start();
@@ -171,6 +333,7 @@ public final class BayesianServer implements AutoCloseable
 
             if (!this.config.readOnly())
             {
+                loadLedger(this.model.totalDocumentCount());
                 this.learningQueue.start();
                 this.scheduler.markPersisted();
                 this.scheduler.start();
@@ -179,8 +342,10 @@ public final class BayesianServer implements AutoCloseable
 
         this.httpServer.start();
 
-        int totalLabels = this.config.mml() ? this.languageModelManager.labelCount() : this.model.labelCount();
-        long totalDocs = this.config.mml() ? this.languageModelManager.totalDocumentCount() : this.model.totalDocumentCount();
+        int totalLabels = this.logisticModel != null ? this.logisticModel.labelCount()
+                : this.config.mml() ? this.languageModelManager.labelCount() : this.model.labelCount();
+        long totalDocs = this.logisticModel != null ? this.logisticModel.totalDocumentCount()
+                : this.config.mml() ? this.languageModelManager.totalDocumentCount() : this.model.totalDocumentCount();
 
         if (this.config.readOnly())
         {
@@ -193,10 +358,26 @@ public final class BayesianServer implements AutoCloseable
     }
 
     /**
-     * Returns the bounded port of the HTTP server of the BayesianServer instance
+     * Loads the training ledger, warning when the model holds documents the ledger does not know, as those can
+     * not be corrected exactly.
      *
-     * @return The bounded port number
+     * @param modelDocuments the number of documents the loaded model holds
+     * @throws IOException if the ledger file exists but cannot be read
      */
+    private void loadLedger(long modelDocuments) throws IOException
+    {
+        if (this.ledger == null)
+        {
+            return;
+        }
+
+        if (!this.ledger.load(this.ledgerFile) && modelDocuments > 0)
+        {
+            LOGGER.warn("The model holds {} documents learned without a training ledger, correcting them only learns "
+                    + "the corrected labels. Rebuild the model from the archive to make them correctable", modelDocuments);
+        }
+    }
+
     public int boundPort()
     {
         return this.httpServer.boundPort();
@@ -231,6 +412,12 @@ public final class BayesianServer implements AutoCloseable
             LOGGER.error("Error while closing the HTTP server", e);
         }
 
+        // Before the learning queue closes: no more due texts are submitted, and the pending ones are saved
+        if (this.implicitLearner != null)
+        {
+            this.implicitLearner.close();
+        }
+
         if (!this.config.readOnly())
         {
             try
@@ -250,6 +437,16 @@ public final class BayesianServer implements AutoCloseable
             {
                 LOGGER.error("Error while closing the Scheduler", e);
             }
+        }
+
+        if (this.logisticModel != null)
+        {
+            this.logisticModel.close();
+        }
+
+        if (this.embeddingModel != null)
+        {
+            this.embeddingModel.close();
         }
 
         // After the HTTP server is closed no more rows arrive, so closing now writes out everything still queued

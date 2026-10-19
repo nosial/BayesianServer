@@ -71,7 +71,7 @@ public final class UnicodeTokenizer implements TokenizerInterface
             return List.of();
         }
 
-        String normalized = Normalizer.normalize(text, Normalizer.Form.NFKC).toLowerCase(Locale.ROOT);
+        String normalized = fold(Normalizer.normalize(text, Normalizer.Form.NFKC).toLowerCase(Locale.ROOT));
         List<String> tokens = new ArrayList<>();
         StringBuilder current = new StringBuilder();
         int previousContinuous = -1;
@@ -103,7 +103,7 @@ public final class UnicodeTokenizer implements TokenizerInterface
 
                 previousContinuous = codePoint;
             }
-            else if (Character.isLetterOrDigit(codePoint))
+            else if (Character.isLetterOrDigit(codePoint) || (!current.isEmpty() && isMark(codePoint)))
             {
                 current.appendCodePoint(codePoint);
                 previousContinuous = -1;
@@ -117,6 +117,36 @@ public final class UnicodeTokenizer implements TokenizerInterface
 
         flushWord(current, tokens, stopWords);
         return tokens;
+    }
+
+    /**
+     * Folds the Turkish dotted and dotless i. Locale-neutral lower-casing turns the capital {@code İ} into
+     * {@code i} followed by a combining dot and keeps the dotless {@code ı}, while the capital {@code I} becomes
+     * {@code i}, so the same Turkish word would otherwise produce different tokens depending on its case.
+     *
+     * @param text lower-cased text
+     * @return the text with {@code i̇} and {@code ı} folded to {@code i}
+     */
+    static String fold(String text)
+    {
+        if (text.indexOf('\u0307') < 0 && text.indexOf('\u0131') < 0)
+        {
+            return text;
+        }
+
+        return text.replace("i\u0307", "i").replace('\u0131', 'i');
+    }
+
+    /**
+     * Returns {@code true} for combining marks (non-spacing, spacing and enclosing).
+     *
+     * @param codePoint the code point
+     * @return {@code true} if the code point is a combining mark
+     */
+    private static boolean isMark(int codePoint)
+    {
+        int type = Character.getType(codePoint);
+        return type == Character.NON_SPACING_MARK || type == Character.COMBINING_SPACING_MARK || type == Character.ENCLOSING_MARK;
     }
 
     /**

@@ -1,6 +1,6 @@
 package net.nosial.bayesian_server.classes;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 import net.nosial.bayesian_server.records.ServerConfiguration;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -72,13 +72,13 @@ class HttpApiIntegrationTest {
                     "{\"text\":\"cheap discount pills buy now\"}");
             assertEquals(200, classify.statusCode());
             JsonNode result = Json.mapper().readTree(classify.body());
-            assertEquals("spam", result.get("top_label").asText());
+            assertEquals("spam", result.get("top_label").asString());
             assertTrue(result.get("labels").isArray());
             assertEquals(2, result.get("labels").size());
 
             // Classify a clearly-ham document.
             HttpResponse<String> ham = post(client, base + "/", "{\"text\":\"team meeting report tomorrow\"}");
-            assertEquals("ham", Json.mapper().readTree(ham.body()).get("top_label").asText());
+            assertEquals("ham", Json.mapper().readTree(ham.body()).get("top_label").asString());
 
             // Model info reflects what was learned.
             JsonNode info = Json.mapper().readTree(get(client, base + "/").body());
@@ -178,7 +178,7 @@ class HttpApiIntegrationTest {
             HttpResponse<String> classify = post(client, base + "/",
                     "{\"text\":\"cheap discount pills buy now\"}");
             assertEquals(200, classify.statusCode());
-            assertEquals("spam", Json.mapper().readTree(classify.body()).get("top_label").asText());
+            assertEquals("spam", Json.mapper().readTree(classify.body()).get("top_label").asString());
 
             // Model info reflects read-only flag.
             JsonNode info = Json.mapper().readTree(get(client, base + "/").body());

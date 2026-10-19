@@ -177,6 +177,23 @@ public final class Program
             consume(options, "mml-global-training", v -> builder.mmlGlobalTraining(Utilities.parseBoolean("mml-global-training", v)));
             consume(options, "mml-min-label-docs", v -> builder.mmlMinLabelDocs(Utilities.parseLong("mml-min-label-docs", v)));
             consume(options, "max-docs", v -> builder.maxDocs(Utilities.parseLong("max-docs", v)));
+            consume(options, "corrections", v -> builder.corrections(Utilities.parseBoolean("corrections", v)));
+            consume(options, "model-type", v -> builder.modelType(v.trim().toLowerCase(java.util.Locale.ROOT)));
+            consume(options, "placeholders", v -> builder.placeholders(Utilities.parseBoolean("placeholders", v)));
+            consume(options, "placeholder-rules", v -> builder.placeholderRulesPath(v.isBlank() ? null : Path.of(v.trim())));
+            consume(options, "stop-words", v -> builder.stopWords(Utilities.parseBoolean("stop-words", v)));
+            consume(options, "dedup", v -> builder.dedup(Utilities.parseBoolean("dedup", v)));
+            consume(options, "hash-bits", v -> builder.hashBits(Utilities.parseInt("hash-bits", v)));
+            consume(options, "retrain-interval", v -> builder.retrainIntervalSeconds(Utilities.parseLong("retrain-interval", v)));
+            consume(options, "target-fpr", v -> builder.targetFalsePositiveRate(Utilities.parseDouble("target-fpr", v)));
+            consume(options, "regularization", v -> builder.regularization(Utilities.parseDouble("regularization", v)));
+            consume(options, "epochs", v -> builder.epochs(Utilities.parseInt("epochs", v)));
+            consume(options, "retrain-threads", v -> builder.retrainThreads(Utilities.parseInt("retrain-threads", v)));
+            consume(options, "feature-cache", v -> builder.featureCache(Utilities.parseBoolean("feature-cache", v)));
+            consume(options, "implicit-delay", v -> builder.implicitDelaySeconds(Utilities.parseLong("implicit-delay", v)));
+            consume(options, "implicit-weight", v -> builder.implicitWeight(Utilities.parseDouble("implicit-weight", v)));
+            consume(options, "implicit-capacity", v -> builder.implicitCapacity(Utilities.parseInt("implicit-capacity", v)));
+            consume(options, "embedding-model", v -> builder.embeddingModelPath(v.isBlank() ? null : Path.of(v.trim())));
             consume(options, "am-enabled", v -> builder.amEnabled(Utilities.parseBoolean("am-enabled", v)));
             consume(options, "am-history-size", v -> builder.amHistorySize(Utilities.parseInt("am-history-size", v)));
             consume(options, "am-capture-rejected", v -> builder.amCaptureRejected(Utilities.parseBoolean("am-capture-rejected", v)));
@@ -375,6 +392,41 @@ public final class Program
                       --max-docs <n>                  Maximum documents the model may learn; 0 =
                                                       unlimited. When reached, training is rejected
                                                       (read-only for learning) (default: 0)
+                      --corrections <true|false>      Allow correcting learned texts with PATCH /,
+                                                      records every training in <model>.ledger
+                                                      (default: true)
+                      --model-type <naive_bayes|logistic>
+                                                      Classifier; logistic is retrained in the
+                                                      background with calibrated thresholds
+                                                      (default: naive_bayes)
+                      --placeholders <true|false>     Replace links, mentions, phone numbers, prices,
+                                                      numbers and emoji with placeholder words
+                                                      instead of removing them (default: false)
+                      --placeholder-rules <path>      JSON file of placeholder rules applied before
+                                                      (or instead of) the default rules
+                      --stop-words <true|false>       Remove stop-words (default: true)
+                      --dedup <true|false>            Learning a text again replaces its earlier
+                                                      labels (default: false)
+                      --hash-bits <n>                 Logistic: hash bits per feature block
+                                                      (default: 18)
+                      --retrain-interval <sec>        Logistic: retrain check interval (default: 60)
+                      --target-fpr <0..1>             Logistic: false positive rate the thresholds
+                                                      are calibrated for (default: 0.05)
+                      --regularization <n>            Logistic: L2 strength (default: 0.00001)
+                      --epochs <n>                    Logistic: passes per training (default: 5)
+                      --retrain-threads <n>           Logistic: retrain threads, 0 = one per processor
+                                                      (default: 0)
+                      --feature-cache <true|false>    Logistic: keep document features in memory
+                                                      between retrains (default: true)
+                      --implicit-delay <sec>          Logistic: learn texts classified with only their
+                                                      request's implicit_label after this delay,
+                                                      0 = disabled (default: 0)
+                      --implicit-weight <0..1>        Logistic: weight of implicitly learned texts
+                                                      (default: 0.1)
+                      --implicit-capacity <n>         Logistic: max texts held for implicit learning
+                                                      (default: 1000000)
+                      --embedding-model <dir>         Logistic: sentence embedding model (model.onnx and
+                                                      tokenizer.json) averaged with the hashed features
                       --am-enabled <true|false>       Enable analytical monitoring (default: true)
                       --am-history-size <n>           Max analytics entries to retain (default: 10000)
                       --am-capture-rejected <true|false>

@@ -45,6 +45,15 @@ plug it in as a spam filter. Users submit examples of spam and not spam, and the
       * [`--mml-global-training <bool>`](#--mml-global-training-bool)
       * [`--mml-min-label-docs <n>`](#--mml-min-label-docs-n)
       * [`--max-docs <n>`](#--max-docs-n)
+      * [`--corrections <bool>`](#--corrections-bool)
+      * [`--model-type <naive_bayes|logistic>`](#--model-type-naive_bayeslogistic)
+      * [`--placeholders <bool>`](#--placeholders-bool)
+      * [`--placeholder-rules <path>`](#--placeholder-rules-path)
+      * [`--stop-words <bool>`](#--stop-words-bool)
+      * [`--dedup <bool>`](#--dedup-bool)
+      * [`--retrain-threads <n>` / `--feature-cache <bool>`](#--retrain-threads-n----feature-cache-bool)
+      * [`--embedding-model <dir>`](#--embedding-model-dir)
+      * [`--implicit-delay <sec>`](#--implicit-delay-sec)
       * [`--am-enabled <bool>`](#--am-enabled-bool)
       * [`--am-history-size <n>`](#--am-history-size-n)
       * [`--am-capture-rejected <bool>`](#--am-capture-rejected-bool)
@@ -52,7 +61,10 @@ plug it in as a spam filter. Users submit examples of spam and not spam, and the
       * [`--filters <list>`](#--filters-list)
   * [API Reference](#api-reference)
     * [`PUSH /` (training)](#push--training)
+    * [`PATCH /` (correction)](#patch--correction)
+    * [`DELETE /` (forget)](#delete--forget)
     * [`POST /` (classification)](#post--classification)
+      * [Negative label](#negative-label)
     * [`GET /` (diagnostics)](#get--diagnostics)
     * [`GET /health` (liveness)](#get-health-liveness)
     * [`GET /analytics` and `POST /analytics` (analytics)](#get-analytics-and-post-analytics-analytics)
@@ -63,6 +75,8 @@ plug it in as a spam filter. Users submit examples of spam and not spam, and the
     * [Lock-free concurrency](#lock-free-concurrency)
     * [Two scoring formulas from the same counts](#two-scoring-formulas-from-the-same-counts)
     * [Bayesian label dependency chain](#bayesian-label-dependency-chain)
+    * [Logistic regression model](#logistic-regression-model)
+      * [Spam detection](#spam-detection)
   * [Tokenizer (UnicodeTokenizer)](#tokenizer-unicodetokenizer)
   * [Stop-Word Filtering](#stop-word-filtering)
   * [Tuning](#tuning)
@@ -72,7 +86,6 @@ plug it in as a spam filter. Users submit examples of spam and not spam, and the
     * [Customer support tickets](#customer-support-tickets)
     * [Forum / Reddit posts](#forum--reddit-posts)
     * [General tuning tips](#general-tuning-tips)
-    * [Threshold calibration](#threshold-calibration)
     * [Feature pruning](#feature-pruning)
     * [Document length normalization](#document-length-normalization)
     * [BM25 term weighting](#bm25-term-weighting)
@@ -125,51 +138,68 @@ curl -X POST http://localhost:8080/ \
 
 The server can be configured using command-line arguments, every option can also be set via an environment variable.
 
-| Option                               | Environment Variable           | Default          | Type              | Description                                                     |
-|--------------------------------------|--------------------------------|------------------|-------------------|-----------------------------------------------------------------|
-| `--model <path>`                     | `BS_MODEL`                     | `bayesian-model` | Path              | Model directory for persistence                                 |
-| `--archive <path>`                   | `BS_ARCHIVE`                   | none             | Path              | Path to a CSV file for archiving training requests              |
-| `--datalog <path>`                   | `BS_DATALOG`                   | none             | Path              | Path to a CSV file for logging classification requests          |
-| `--host <addr>`                      | `BS_HOST`                      | `0.0.0.0`        | Address           | Bind address                                                    |
-| `--port <n>`                         | `BS_PORT`                      | `8080`           | Integer (1-65535) | Bind port                                                       |
-| `--backlog <n>`                      | `BS_BACKLOG`                   | `1024`           | Integer           | TCP accept backlog                                              |
-| `--threshold <0..1>`                 | `BS_THRESHOLD`                 | `0.5`            | Double (0-1)      | Global multi-label decision threshold                           |
-| `--smoothing <alpha>`                | `BS_SMOOTHING`                 | `1.0`            | Double (>0)       | Additive (Lidstone/Laplace) smoothing constant                  |
-| `--normalize <bool>`                 | `BS_NORMALIZE`                 | `false`          | Boolean           | L2-normalize input document vectors before scoring              |
-| `--memory-limit <MB>`                | `BS_MEMORY_LIMIT`              | `0`              | Integer           | Max heap (MB) for label token data; `0` = unlimited             |
-| `--learner-threads <n>`              | `BS_LEARNER_THREADS`           | `2`              | Integer           | Background learning queue workers                               |
-| `--learn-queue-capacity <n>`         | `BS_LEARN_QUEUE_CAPACITY`      | `100000`         | Integer           | Max pending learning tasks                                      |
-| `--save-interval <sec>`              | `BS_SAVE_INTERVAL`             | `60`             | Integer           | Periodic model persistence interval; `0` disables               |
-| `--min-token-length <n>`             | `BS_MIN_TOKEN_LENGTH`          | `2`              | Integer           | Shortest retained token in Unicode code points; `0` = unlimited |
-| `--max-token-length <n>`             | `BS_MAX_TOKEN_LENGTH`          | `0`              | Integer           | Longest retained token in Unicode code points; `0` = unlimited  |
-| `--cjk-bigrams <bool>`               | `BS_CJK_BIGRAMS`               | `true`           | Boolean           | Emit character bigrams for CJK text                             |
-| `--http-worker-threads <n>`          | `BS_HTTP_WORKER_THREADS`       | `auto`           | Integer           | Netty I/O worker threads                                        |
-| `--service-threads <n>`              | `BS_SERVICE_THREADS`           | `#cores`         | Integer           | Handler execution threads                                       |
-| `--max-request-size <size>`          | `BS_MAX_REQUEST_SIZE`          | `8MB`            | Size string       | Max HTTP request body                                           |
-| `--request-read-timeout-ms <n>`      | `BS_REQUEST_READ_TIMEOUT_MS`   | `30000`          | Integer (>=100)   | Max idle time while receiving an HTTP request                   |
-| `--read-only <bool>`                 | `BS_READ_ONLY`                 | `false`          | Boolean           | Load model in read-only mode; disables learning and persistence |
-| `--bm25 <bool>`                      | `BS_BM25`                      | `false`          | Boolean           | Enable BM25 term weighting                                      |
-| `--bm25-k1 <n>`                      | `BS_BM25_K1`                   | `1.5`            | Double (>=0)      | BM25 term frequency saturation parameter                        |
-| `--bm25-b <n>`                       | `BS_BM25_B`                    | `0.75`           | Double (0-1)      | BM25 document length normalization parameter                    |
-| `--online-lr <bool>`                 | `BS_ONLINE_LR`                 | `false`          | Boolean           | Enable online logistic regression stacking                      |
-| `--lr-rate <n>`                      | `BS_LR_RATE`                   | `0.01`           | Double (>0)       | Initial SGD learning rate for online LR                         |
-| `--lr-decay <n>`                     | `BS_LR_DECAY`                  | `0.001`          | Double (>=0)      | Learning rate decay factor for online LR                        |
-| `--label-chain <bool>`               | `BS_LABEL_CHAIN`               | `false`          | Boolean           | Enable Chow-Liu tree label chain post-processing                |
-| `--complement <bool>`                | `BS_COMPLEMENT`                | `false`          | Boolean           | Enable Complement Naive Bayes scoring                           |
-| `--tfidf <bool>`                     | `BS_TFIDF`                     | `false`          | Boolean           | Enable TF-IDF term weighting during classification              |
-| `--prior-weight <n>`                 | `BS_PRIOR_WEIGHT`              | `1.0`            | Double (>=0)      | Prior weight multiplier                                         |
-| `--mml <bool>`                       | `BS_MML`                       | `false`          | Boolean           | Enable Multi-Model Language mode                                |
-| `--mml-confidence-threshold <0..1>`  | `BS_MML_CONFIDENCE_THRESHOLD`  | `0.35`           | Double (0-1)      | Detection confidence below which MML routes to "und" model      |
-| `--mml-global-training <bool>`       | `BS_MML_GLOBAL_TRAINING`       | `true`           | Boolean           | Also train every document into the global "und" model           |
-| `--mml-min-label-docs <n>`           | `BS_MML_MIN_LABEL_DOCS`        | `10`             | Long (>=0)        | Docs per label a language model needs before MML uses it        |
-| `--max-docs <n>`                     | `BS_MAX_DOCS`                  | `0`              | Long (>=0)        | Max documents the model may learn; 0 = unlimited                |
-| `--am-enabled <bool>`                | `BS_AM_ENABLED`                | `true`           | Boolean           | Enable analytical monitoring history                            |
-| `--am-history-size <n>`              | `BS_AM_HISTORY_SIZE`           | `10000`          | Integer (>=1)     | Max analytics entries to retain before eviction                 |
-| `--am-capture-rejected <bool>`       | `BS_AM_CAPTURE_REJECTED`       | `true`           | Boolean           | Capture rejected learning tasks in analytics                    |
-| `--am-capture-classification <bool>` | `BS_AM_CAPTURE_CLASSIFICATION` | `false`          | Boolean           | Capture classification requests in analytics                    |
-| `--filters <list>`                   | `BS_FILTERS`                   | none             | Comma-separated   | Pre-tokenization filters; use `all` for every filter            |
-| `--log-level <level>`                | `BS_LOG_LEVEL`                 | `INFO`           | String            | Logging level: `TRACE`, `DEBUG`, `INFO`, `WARN`, `ERROR`, `OFF` |
-| `-h, --help`                         |                                | --               | Flag              | Show usage and exit                                             |
+| Option                               | Environment Variable           | Default          | Type              | Description                                                           |
+|--------------------------------------|--------------------------------|------------------|-------------------|-----------------------------------------------------------------------|
+| `--model <path>`                     | `BS_MODEL`                     | `bayesian-model` | Path              | Model directory for persistence                                       |
+| `--archive <path>`                   | `BS_ARCHIVE`                   | none             | Path              | Path to a CSV file for archiving training requests                    |
+| `--datalog <path>`                   | `BS_DATALOG`                   | none             | Path              | Path to a CSV file for logging classification requests                |
+| `--host <addr>`                      | `BS_HOST`                      | `0.0.0.0`        | Address           | Bind address                                                          |
+| `--port <n>`                         | `BS_PORT`                      | `8080`           | Integer (1-65535) | Bind port                                                             |
+| `--backlog <n>`                      | `BS_BACKLOG`                   | `1024`           | Integer           | TCP accept backlog                                                    |
+| `--threshold <0..1>`                 | `BS_THRESHOLD`                 | `0.5`            | Double (0-1)      | Global multi-label decision threshold                                 |
+| `--smoothing <alpha>`                | `BS_SMOOTHING`                 | `1.0`            | Double (>0)       | Additive (Lidstone/Laplace) smoothing constant                        |
+| `--normalize <bool>`                 | `BS_NORMALIZE`                 | `false`          | Boolean           | L2-normalize input document vectors before scoring                    |
+| `--memory-limit <MB>`                | `BS_MEMORY_LIMIT`              | `0`              | Integer           | Max heap (MB) for label token data; `0` = unlimited                   |
+| `--learner-threads <n>`              | `BS_LEARNER_THREADS`           | `2`              | Integer           | Background learning queue workers                                     |
+| `--learn-queue-capacity <n>`         | `BS_LEARN_QUEUE_CAPACITY`      | `100000`         | Integer           | Max pending learning tasks                                            |
+| `--save-interval <sec>`              | `BS_SAVE_INTERVAL`             | `60`             | Integer           | Periodic model persistence interval; `0` disables                     |
+| `--min-token-length <n>`             | `BS_MIN_TOKEN_LENGTH`          | `2`              | Integer           | Shortest retained token in Unicode code points; `0` = unlimited       |
+| `--max-token-length <n>`             | `BS_MAX_TOKEN_LENGTH`          | `0`              | Integer           | Longest retained token in Unicode code points; `0` = unlimited        |
+| `--cjk-bigrams <bool>`               | `BS_CJK_BIGRAMS`               | `true`           | Boolean           | Emit character bigrams for CJK text                                   |
+| `--http-worker-threads <n>`          | `BS_HTTP_WORKER_THREADS`       | `auto`           | Integer           | Netty I/O worker threads                                              |
+| `--service-threads <n>`              | `BS_SERVICE_THREADS`           | `#cores`         | Integer           | Handler execution threads                                             |
+| `--max-request-size <size>`          | `BS_MAX_REQUEST_SIZE`          | `8MB`            | Size string       | Max HTTP request body                                                 |
+| `--request-read-timeout-ms <n>`      | `BS_REQUEST_READ_TIMEOUT_MS`   | `30000`          | Integer (>=100)   | Max idle time while receiving an HTTP request                         |
+| `--read-only <bool>`                 | `BS_READ_ONLY`                 | `false`          | Boolean           | Load model in read-only mode; disables learning and persistence       |
+| `--bm25 <bool>`                      | `BS_BM25`                      | `false`          | Boolean           | Enable BM25 term weighting                                            |
+| `--bm25-k1 <n>`                      | `BS_BM25_K1`                   | `1.5`            | Double (>=0)      | BM25 term frequency saturation parameter                              |
+| `--bm25-b <n>`                       | `BS_BM25_B`                    | `0.75`           | Double (0-1)      | BM25 document length normalization parameter                          |
+| `--online-lr <bool>`                 | `BS_ONLINE_LR`                 | `false`          | Boolean           | Enable online logistic regression stacking                            |
+| `--lr-rate <n>`                      | `BS_LR_RATE`                   | `0.01`           | Double (>0)       | Initial SGD learning rate for online LR                               |
+| `--lr-decay <n>`                     | `BS_LR_DECAY`                  | `0.001`          | Double (>=0)      | Learning rate decay factor for online LR                              |
+| `--label-chain <bool>`               | `BS_LABEL_CHAIN`               | `false`          | Boolean           | Enable Chow-Liu tree label chain post-processing                      |
+| `--complement <bool>`                | `BS_COMPLEMENT`                | `false`          | Boolean           | Enable Complement Naive Bayes scoring                                 |
+| `--tfidf <bool>`                     | `BS_TFIDF`                     | `false`          | Boolean           | Enable TF-IDF term weighting during classification                    |
+| `--prior-weight <n>`                 | `BS_PRIOR_WEIGHT`              | `1.0`            | Double (>=0)      | Prior weight multiplier                                               |
+| `--mml <bool>`                       | `BS_MML`                       | `false`          | Boolean           | Enable Multi-Model Language mode                                      |
+| `--mml-confidence-threshold <0..1>`  | `BS_MML_CONFIDENCE_THRESHOLD`  | `0.35`           | Double (0-1)      | Detection confidence below which MML routes to "und" model            |
+| `--mml-global-training <bool>`       | `BS_MML_GLOBAL_TRAINING`       | `true`           | Boolean           | Also train every document into the global "und" model                 |
+| `--mml-min-label-docs <n>`           | `BS_MML_MIN_LABEL_DOCS`        | `10`             | Long (>=0)        | Docs per label a language model needs before MML uses it              |
+| `--max-docs <n>`                     | `BS_MAX_DOCS`                  | `0`              | Long (>=0)        | Max documents the model may learn; 0 = unlimited                      |
+| `--corrections <bool>`               | `BS_CORRECTIONS`               | `true`           | Boolean           | Allow correcting learned texts with `PATCH /`                         |
+| `--model-type <type>`                | `BS_MODEL_TYPE`                | `naive_bayes`    | String            | `naive_bayes` or `logistic`                                           |
+| `--placeholders <bool>`              | `BS_PLACEHOLDERS`              | `false`          | Boolean           | Replace links, mentions, numbers, emoji with placeholder words        |
+| `--placeholder-rules <path>`         | `BS_PLACEHOLDER_RULES`         | none             | Path              | JSON placeholder rules applied before (or instead of) the defaults    |
+| `--stop-words <bool>`                | `BS_STOP_WORDS`                | `true`           | Boolean           | Remove stop-words                                                     |
+| `--dedup <bool>`                     | `BS_DEDUP`                     | `false`          | Boolean           | Learning a text again replaces its earlier labels                     |
+| `--hash-bits <n>`                    | `BS_HASH_BITS`                 | `18`             | Integer (8-26)    | Logistic: hash bits per feature block                                 |
+| `--retrain-interval <sec>`           | `BS_RETRAIN_INTERVAL`          | `60`             | Long (>=1)        | Logistic: seconds between checks for changed documents                |
+| `--target-fpr <0..1>`                | `BS_TARGET_FPR`                | `0.05`           | Double (0-1)      | Logistic: false positive rate the thresholds are calibrated for       |
+| `--regularization <n>`               | `BS_REGULARIZATION`            | `0.00001`        | Double (>0)       | Logistic: L2 regularization strength                                  |
+| `--epochs <n>`                       | `BS_EPOCHS`                    | `5`              | Integer (>=1)     | Logistic: passes over the documents per training                      |
+| `--retrain-threads <n>`              | `BS_RETRAIN_THREADS`           | `0`              | Integer (>=0)     | Logistic: retrain threads, `0` = one per processor                    |
+| `--feature-cache <bool>`             | `BS_FEATURE_CACHE`             | `true`           | Boolean           | Logistic: keep document features in memory between retrains           |
+| `--implicit-delay <sec>`             | `BS_IMPLICIT_DELAY`            | `0`              | Long (>=0)        | Logistic: learn ordinary classified texts after this delay, `0` = off |
+| `--implicit-weight <0..1>`           | `BS_IMPLICIT_WEIGHT`           | `0.1`            | Double (0-1)      | Logistic: weight of implicitly learned texts                          |
+| `--implicit-capacity <n>`            | `BS_IMPLICIT_CAPACITY`         | `1000000`        | Integer (>=1)     | Logistic: max texts held for implicit learning                        |
+| `--embedding-model <dir>`            | `BS_EMBEDDING_MODEL`           | none             | Path              | Logistic: sentence embedding model averaged with the hashed features  |
+| `--am-enabled <bool>`                | `BS_AM_ENABLED`                | `true`           | Boolean           | Enable analytical monitoring history                                  |
+| `--am-history-size <n>`              | `BS_AM_HISTORY_SIZE`           | `10000`          | Integer (>=1)     | Max analytics entries to retain before eviction                       |
+| `--am-capture-rejected <bool>`       | `BS_AM_CAPTURE_REJECTED`       | `true`           | Boolean           | Capture rejected learning tasks in analytics                          |
+| `--am-capture-classification <bool>` | `BS_AM_CAPTURE_CLASSIFICATION` | `false`          | Boolean           | Capture classification requests in analytics                          |
+| `--filters <list>`                   | `BS_FILTERS`                   | none             | Comma-separated   | Pre-tokenization filters; use `all` for every filter                  |
+| `--log-level <level>`                | `BS_LOG_LEVEL`                 | `INFO`           | String            | Logging level: `TRACE`, `DEBUG`, `INFO`, `WARN`, `ERROR`, `OFF`       |
+| `-h, --help`                         |                                | --               | Flag              | Show usage and exit                                                   |
 
 #### `--model <path>`
 
@@ -177,28 +207,37 @@ Filesystem path where the model is persisted. If the path does not exist it is c
 
 #### `--archive <path>`
 
-When set, every training request accepted by the `PUSH /` endpoint is appended as a row to the specified CSV file.
-The file is created with a header row (`labels,content`) if it does not already exist. I/O errors while writing to the
-archive are logged as warnings but do not affect request processing — the training task proceeds normally even if the
-archive write fails.
+When set, every document accepted by `PUSH /` or `PATCH /` (and every text learned implicitly) is appended as a row to
+the specified CSV file, a text forgotten with `DELETE /` as a row without labels. The file is created with a header
+row (`labels,content,weight`) if it does not already exist; archives written before weights existed have the header
+`labels,content` and rows without a weight, which count as `1`. The archive is lossless: when the disk can't keep up,
+requests wait for room in its buffer (100,000 rows) instead of dropping rows, so a model rebuilt from it (eg; with
+`scripts/rebuild_from_archive.py`) learns exactly what the server learned. I/O errors while writing to the archive are
+logged as warnings but do not affect request processing.
 
 This is useful for auditing, debugging misclassifications, or replaying training data during migration.
 
 #### `--datalog <path>`
 
 When set, every document submitted to the `POST /` classification endpoint is appended as a row to the specified CSV
-file. The file uses the same format as [`--archive`](#--archive-path) (`labels,content`), where `labels` holds the
-predicted labels (semicolon-separated, empty when no label met the threshold) and `content` holds the original,
-unfiltered text. I/O errors while writing to the data log are logged as warnings and do not affect the classification
-response.
+file, with the columns `timestamp` (milliseconds), `labels` (the predicted labels, semicolon-separated, empty when no
+label met the threshold), `top_label`, `top_probability`, `negative_label` and `negative_probability` (the request's
+`negative_label` and its posterior, empty without one), `model_version` and `content` (the original, unfiltered text).
+A data log written with other columns (eg; by an older version, `labels,content`) is moved aside to
+`<path>.old-<millis>` when the server starts writing. I/O errors while writing to the data log are logged as warnings
+and do not affect the classification response.
 
 Rows are written by a background thread, so requests never wait on the disk. Up to 10,000 rows are buffered in memory;
 if the disk cannot keep up and the buffer fills, further rows are dropped (with a warning at most once a minute) instead
 of slowing down classification. Queued rows are written out when the server shuts down cleanly. `--archive` is written
 the same way.
 
-Because the format matches the archive, a reviewed and relabeled data log can be cleaned and replayed with
-`scripts/rebuild_from_archive.py`. Note that the data log contains every classified document verbatim and grows without
+`scripts/labelling_queue.py select` builds a labelling queue from the data log: the texts whose probability of not
+being the negative label was closest to the calibrated threshold (the ones the model was least sure about, which teach
+it the most), skipping texts the archive already holds. `scripts/labelling_queue.py push` sends the labelled queue back
+as corrections. `scripts/evaluate.py` measures, on a held-out labelled set, how much ordinary content and spam a
+client deciding like BayesianPlugin would flag for every `minimum_confidence`, to choose it together with the
+calibrated thresholds. Note that the data log contains every classified document verbatim and grows without
 bound, so plan for its size and for the sensitivity of the content it stores.
 
 #### `--smoothing <alpha>`
@@ -210,8 +249,9 @@ risk overfitting. Higher values make the model more conservative.
 #### `--memory-limit <MB>`
 
 Maximum heap (in megabytes) for per-label token-count data. When `0` (default), all labels stay in memory. When set to a
-positive value, Caffeine uses a weight-based eviction policy (estimating ~200 bytes per token) to evict the
-least-frequently-used labels to disk. Evicted labels are persisted via `StructureModelStore` and transparently reloaded
+positive value, Caffeine uses a weight-based eviction policy (estimating 256 bytes per token, 384 at 50 MB or less and
+512 at 10 MB or less) to evict the least-frequently-used labels to disk. A label is weighed again whenever it's
+learned or unlearned, so labels that grow are evicted once they exceed the limit. Evicted labels are persisted via `StructureModelStore` and transparently reloaded
 on the next access.
 
 In MML mode (`--mml`) the budget is apportioned equally across all per-language models. With `--memory-limit 256` and 5
@@ -413,6 +453,103 @@ with `--max-docs 0`.
 
 In MML mode, the limit applies to the **sum** of all per-language models.
 
+#### `--corrections <bool>`
+
+Enables [`PATCH /`](#patch--correction), which corrects the labels of a text that was already learned. A Naive Bayes
+model only holds counts and cannot tell which documents they came from, so with this option every training is recorded
+in a training ledger: a 64-bit hash of the text (not the text itself), the language model it was trained into and its
+labels. The ledger costs roughly 100 bytes per distinct text and is saved with the model as `<model-path>.ledger`, next
+to the model directory. Default `true`; `false` disables `PATCH /` and the ledger.
+
+Removing a training re-derives the tokens of the text, which is exact only while preprocessing is unchanged. The ledger
+stores a fingerprint of `--filters`, `--min-token-length`, `--max-token-length`, `--cjk-bigrams`, `--mml`,
+`--mml-confidence-threshold` and the stop-word lists, and is ignored (with a warning) when the server starts with a
+different one. Texts learned without a ledger, including every text of a model built before this option existed, are
+then only learned again with the corrected labels; rebuild the model from the archive to make them correctable.
+
+#### `--model-type <naive_bayes|logistic>`
+
+`naive_bayes` (default) is the incrementally trained Multinomial Naive Bayes model described below. `logistic` is a
+one-vs-rest [logistic regression model](#logistic-regression-model) over hashed word and character features, retrained
+in the background from every learned document, with decision thresholds calibrated for a target false positive rate.
+On short, multilingual chat messages it makes far fewer false positives than Naive Bayes, whose probabilities saturate
+at 0 or 1 and cannot be thresholded. `--mml` is not supported with `logistic` (one model learns every language), and
+the Naive Bayes options (`--smoothing`, `--bm25`, `--complement`, `--label-chain`, `--online-lr`, ...) do not apply.
+
+#### `--placeholders <bool>`
+
+Normalizes messages before `--filters` and tokenization, replacing structured content with placeholder words instead
+of deleting it. Zero-width and other invisible characters are removed and their presence becomes `xzwx`, and NFKC folds
+styled letters (eg; `𝐒𝐡𝐨𝐰`) to plain ones. Then the placeholder rules replace what they match, in order. The default
+rules ([`placeholders.json`](src/main/resources/placeholders.json)) recognize what any chat has: links (`xurlx`),
+mentions (`xmentionx`), phone numbers (`xphonex`), prices (`xmoneyx`), other numbers by digit count (`xnum1`..`xnum6`)
+and every emoji (`emj` + code point). These are among the strongest spam signals, so they should not be removed with
+`--filters` (`all` deletes links, mentions, emoji and non-BMP text, leaving a link-only message without any token).
+
+#### `--placeholder-rules <path>`
+
+A JSON file of placeholder rules for the application the server is used in, applied before the default rules, before the
+default rule turns them into `xurlx`). With `"replace_defaults": true` the file's rules are used instead of the default
+rules. Requires `--placeholders true`. Changing the rules retrains the logistic model from its stored documents.
+
+```json
+{
+  "replace_defaults": false,
+  "rules": [
+    {"name": "ticket", "pattern": "#\\d+", "placeholder": "xticket{length}", "length_cap": 3}
+  ]
+}
+```
+
+A rule replaces every match of its `pattern` (a Java regular expression) with its `placeholder`, a single word that
+may contain `{length}` (the length of the match, at most `length_cap` when set) and `{codepoint}` (the hexadecimal code
+point of the match's first character).
+
+#### `--stop-words <bool>`
+
+Whether stop-words are removed (default `true`). The lists are made for search engines: they remove words like
+`sex` or `now` and, for undetermined languages, the union of 50 languages, while chat messages are short enough that
+every word matters. `false` is recommended for spam detection.
+
+#### `--dedup <bool>`
+
+When `true`, learning a text that was learned before replaces its earlier labels instead of adding to them, so spam
+repeated hundreds of times weighs as much as any other document and the latest label of a text wins. With
+`naive_bayes` it requires `--corrections` (every `PUSH /` is applied like `PATCH /`), the logistic model's store is
+always deduplicated by text, `--dedup` only decides whether `PUSH /` replaces the labels of a known text or adds the
+new labels to them (`PATCH /` always replaces them).
+
+#### `--retrain-threads <n>` / `--feature-cache <bool>`
+
+Every retrain of the logistic model featurizes the stored documents and trains each label, and at the same time the
+calibration model, on `--retrain-threads` threads (`0`, the default, uses one per processor). Labels train
+independently and visit the documents in the same order, so the weights don't depend on the number of threads. With
+`--feature-cache true` (default) the features of the stored documents stay in memory between retrains, so a retrain
+only featurizes new documents; `false` featurizes every document again and uses less memory.
+
+#### `--embedding-model <dir>`
+
+With the logistic model, the directory of a sentence embedding model exported to ONNX: `model.onnx` and its
+HuggingFace `tokenizer.json`, eg; the `onnx/` files of
+[`intfloat/multilingual-e5-small`](https://huggingface.co/intfloat/multilingual-e5-small). Every label then also trains
+a classifier on the embeddings of the documents (embedded as `"query: " + text`, mean-pooled and normalized), and a
+document's probability is the average of both classifiers'. Embeddings place texts with the same meaning close
+together across wording and languages, so the model recognizes spam it has seen in other words; on chat spam this
+caught more spam at a lower false positive rate than the hashed features alone. The cost is memory (about 1 GB outside
+the Java heap for e5-small) and a few milliseconds of CPU per classified or newly learned text; embeddings are kept with
+the [feature cache](#--retrain-threads-n----feature-cache-bool). Weights trained without the embedding model (or with
+another one) are retrained on startup.
+
+#### `--implicit-delay <sec>`
+
+Models trained only on reported content see far more spam than real traffic does, and flag ordinary messages. With
+the logistic model and a positive delay, a classification may name an `implicit_label` (eg; `NORMAL`): a text predicted
+with only that label is held for `--implicit-delay` seconds and then learned with it, with a weight of
+`--implicit-weight` (default `0.1`). A text learned, corrected or forgotten in the meantime (eg; because it was
+reported) is dropped, and texts the model stores already are never learned implicitly, so explicit labels always win.
+Implicit documents weigh less than 1, so they never calibrate the thresholds. At most `--implicit-capacity` texts are
+held, they're saved to `implicit.bin` in the model directory every minute and on shutdown.
+
 #### `--am-enabled <bool>`
 
 Whether to enable the analytical monitoring subsystem. When `true` (default), the server records a bounded history of
@@ -540,6 +677,15 @@ Learns one or more documents asynchronously. Training happens in background work
 ]}
 ```
 
+**Weighted document** (logistic model): `weight` (default `1`, at most `100`) scales how much a document counts in
+training, eg; lower for labels from a less trusted source. Documents with a weight below `1` are learned but don't
+calibrate the decision thresholds. A batch document takes its own `weight`. The Naive Bayes models count every
+document once.
+
+```json
+{"text": "join my channel", "label": "spam", "weight": 0.25}
+```
+
 **Response** (`202` accepted / `503` back-pressure):
 
 ```json
@@ -556,7 +702,42 @@ Learns one or more documents asynchronously. Training happens in background work
 | `max_docs`          | long    | Configured max document limit; 0 = unlimited |
 | `rejected_max_docs` | long    | Documents rejected due to max-docs limit     |
 
+Only the documents accepted into the queue are written to the [`--archive`](#--archive-path), so a model rebuilt from
+it learns exactly what the server learned. Labels must not contain `;` (it separates the labels of a document in the
+archive), a request with such a label is rejected with `400`.
+
 Each document may carry one or more labels. Labels are created on first use and never need to be declared in advance.
+
+---
+
+### `PATCH /` (correction)
+
+Corrects the labels of texts that were already learned, eg; when a moderator reclassifies a message. It takes the same
+body as [`PUSH /`](#push--training) and returns the same response. For each text, every earlier training of that exact
+text is removed from the model (all its labels, however many times it was learned) and the text is learned once with
+the given labels. The model then holds exactly the counts it would hold had the text only ever been learned with the
+corrected labels; a label whose last document is removed disappears from the model.
+
+```json
+{"text": "claim your free prize now", "label": "spam"}
+```
+
+Corrections are processed by the learning workers like training. Every task of the same text is handled by the same
+worker in submission order, so a correction sent right after the training it corrects is never applied before it. A
+text that has no recorded training (see [`--corrections`](#--corrections-bool)) is only learned with the given labels.
+Online logistic regression weights (`--online-lr`) are not reverted. Corrections are not limited by `--max-docs` and are
+written to `--archive` like training rows, so replaying the archive with
+`scripts/rebuild_from_archive.py --latest-wins` keeps the corrected labels.
+
+Only registered when `--corrections` is `true` (the default) and the server is not read-only, otherwise `405`.
+
+---
+
+### `DELETE /` (forget)
+
+Forgets texts: every earlier training of each text is removed. It takes the body of `PUSH /` without labels or
+weights (`{"text": "..."}` or a `documents` array) and returns the same response. Available with the logistic model,
+and with the Naive Bayes models when `--corrections` is enabled (only recorded trainings can be removed).
 
 ---
 
@@ -569,8 +750,28 @@ Each document may carry one or more labels. Labels are created on first use and 
 Optional overrides:
 
 ```json
-{"text": "cheap viagra offer", "top_k": 5, "threshold": 0.3}
+{"text": "cheap viagra offer", "top_k": 5, "threshold": 0.3, "negative_label": "NORMAL"}
 ```
+
+| Field            | Type   | Description                                                                                                                                           |
+|------------------|--------|-------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `text`           | string | The text to classify (required)                                                                                                                       |
+| `top_k`          | int    | Maximum number of ranked `labels` to return, `<= 0` or absent returns all                                                                             |
+| `threshold`      | double | Minimum posterior of a predicted label (0..1), defaults to `--threshold`                                                                              |
+| `negative_label` | string | Logistic model: the label of documents where nothing was detected (eg; `NORMAL`), see [Negative label](#negative-label)                               |
+| `texts`          | array  | Classifies up to 1000 texts in one request instead of `text`, the response is `{"results": [...]}` with one classification per text in the same order |
+| `implicit_label` | string | Logistic model with [`--implicit-delay`](#--implicit-delay-sec): a text predicted with only this label is learned with it later                       |
+
+#### Negative label
+
+With `--model-type logistic`, a classification can name the label of documents where nothing was detected, eg;
+`NORMAL`. The most probable other label is then predicted (`predicted_labels`) only when the probability of not being
+negative, `1 - P(NORMAL)`, is above the negative threshold of `NORMAL`, calibrated so that at most `--target-fpr` of
+recent `NORMAL` documents exceed it, and the negative label is predicted otherwise. `top_label` stays the most
+probable label. Every retrain calibrates a negative threshold for every label (`negative_thresholds` of `GET /`), so
+any label can be the negative label of a request. A negative label that is not trained, or whose negative threshold is
+not calibrated (eg; too few documents), is ignored and the labels are predicted by their own thresholds. The Naive
+Bayes models ignore `negative_label`.
 
 **Response:**
 
@@ -710,35 +911,40 @@ Full model and server state.
 
 **`learning` object:**
 
-| Field               | Type    | Description                                         |
-|---------------------|---------|-----------------------------------------------------|
-| `pending`           | int     | Tasks currently waiting to be processed             |
-| `capacity`          | int     | Maximum queue capacity                              |
-| `workers`           | int     | Number of background learner threads                |
-| `submitted`         | long    | Tasks accepted into the queue since startup         |
-| `processed`         | long    | Tasks successfully learned since startup            |
-| `failed`            | long    | Tasks that threw exceptions while learning          |
-| `rejected`          | long    | Tasks refused because queue was full                |
-| `rejected_max_docs` | long    | Tasks refused because max-docs limit was reached    |
-| `max_docs`          | long    | Max documents the model may learn; 0 = unlimited    |
-| `current_docs`      | long    | Current total documents learned                     |
+| Field               | Type | Description                                                                             |
+|---------------------|------|-----------------------------------------------------------------------------------------|
+| `pending`           | int  | Tasks currently waiting to be processed                                                 |
+| `capacity`          | int  | Maximum queue capacity                                                                  |
+| `workers`           | int  | Number of background learner threads                                                    |
+| `submitted`         | long | Tasks accepted into the queue since startup                                             |
+| `processed`         | long | Tasks successfully learned since startup                                                |
+| `failed`            | long | Tasks that threw exceptions while learning                                              |
+| `rejected`          | long | Tasks refused because queue was full                                                    |
+| `rejected_max_docs` | long | Tasks refused because max-docs limit was reached                                        |
+| `max_docs`          | long | Max documents the model may learn; 0 = unlimited                                        |
+| `current_docs`      | long | Current total documents learned                                                         |
+| `corrected`         | long | Corrections that removed earlier trainings of their text                                |
+| `uncorrectable`     | long | Corrections of texts without recorded trainings, only learned with the corrected labels |
 
 **`server` object:**
 
-| Field                       | Type    | Description                                      |
-|-----------------------------|---------|--------------------------------------------------|
-| `default_threshold`         | double  | Default multi-label decision threshold           |
-| `smoothing_alpha`           | double  | Additive smoothing constant                      |
-| `cjk_bigrams`               | boolean | Whether CJK character bigrams are enabled        |
-| `min_token_length`          | int     | Shortest retained token length                   |
-| `max_token_length`          | int     | Longest retained token length                    |
-| `current_memory_bytes`      | long    | Current JVM heap usage (total - free)            |
-| `available_memory_bytes`    | long    | Maximum heap JVM will use                        |
-| `model_memory_bytes`        | long    | Estimated memory used by loaded label token maps |
-| `model_memory_limit_bytes`  | long    | Configured model memory limit; 0 = unlimited     |
-| `read_only`                 | boolean | Whether the server is in read-only mode          |
-| `mml`                       | boolean | Whether Multi-Model Language mode is enabled     |
-| `mml_confidence_threshold`  | double  | Detection confidence threshold for MML routing   |
+| Field                      | Type    | Description                                                                                                                   |
+|----------------------------|---------|-------------------------------------------------------------------------------------------------------------------------------|
+| `default_threshold`        | double  | Default multi-label decision threshold                                                                                        |
+| `smoothing_alpha`          | double  | Additive smoothing constant                                                                                                   |
+| `cjk_bigrams`              | boolean | Whether CJK character bigrams are enabled                                                                                     |
+| `min_token_length`         | int     | Shortest retained token length                                                                                                |
+| `max_token_length`         | int     | Longest retained token length                                                                                                 |
+| `current_memory_bytes`     | long    | Current JVM heap usage (total - free)                                                                                         |
+| `available_memory_bytes`   | long    | Maximum heap JVM will use                                                                                                     |
+| `model_memory_bytes`       | long    | Estimated memory used by loaded label token maps                                                                              |
+| `model_memory_limit_bytes` | long    | Configured model memory limit; 0 = unlimited                                                                                  |
+| `read_only`                | boolean | Whether the server is in read-only mode                                                                                       |
+| `mml`                      | boolean | Whether Multi-Model Language mode is enabled                                                                                  |
+| `mml_confidence_threshold` | double  | Detection confidence threshold for MML routing                                                                                |
+| `model_type`               | string  | The classifier, `naive_bayes` or `logistic`                                                                                   |
+| `calibrated_thresholds`    | object  | Logistic: calibrated threshold on `P(label)` by label                                                                         |
+| `negative_thresholds`      | object  | Logistic: calibrated threshold on `1 - P(label)` by label, applied when the label is the `negative_label` of a classification |
 
 ---
 
@@ -958,8 +1164,10 @@ Given a label *L* with document count *D_L*, token counts *c_L(t)* for each toke
 **Log-prior:**
 
 ```
-logP(L) = log(D_L / D_total)
+logP(L) = priorWeight * log((D_L + alpha) / (D_total + alpha * K))
 ```
+
+where *K* is the number of labels and *priorWeight* is [`--prior-weight`](#--prior-weight-n).
 
 **Log-likelihood (with smoothing):**
 
@@ -979,10 +1187,23 @@ where *Z* is the partition function (sum over all labels).
 
 **One-vs-rest probability:**
 
+A separate binary Naive Bayes model per label, *L* against its complement *¬L* (every other label), not derived from
+the multinomial posterior. The complement's counts are the global counts minus the label's: *D_¬L = D_total - D_L*,
+*c_¬L(t) = c(t) - c_L(t)*.
+
 ```
-odds = exp(logP(L | doc) - log(1 - P(L | doc)))
-P_one_vs_rest(L) = odds / (1 + odds)
+logP(L)    = log((D_L + alpha)  / (D_total + 2 * alpha))
+logP(¬L)   = log((D_¬L + alpha) / (D_total + 2 * alpha))
+logP(t | ¬L) = log((c_¬L(t) + alpha) / (Σ c_¬L(u) + alpha * V))
+
+score_in(L)  = logP(L)  + Σ w(t) * logP(t | L)
+score_out(L) = logP(¬L) + Σ w(t) * logP(t | ¬L)
+
+P_one_vs_rest(L) = sigmoid(score_in(L) - score_out(L))
 ```
+
+where *w(t)* is the document's weight of token *t* (its count, or its BM25/TF-IDF weight when enabled). The labels'
+one-vs-rest probabilities don't sum to 1. Being Naive Bayes, they still saturate near 0 or 1 on longer documents.
 
 ### Bayesian label dependency chain
 
@@ -1001,11 +1222,54 @@ logOdds(L_i) = baseLogOdds(L_i)
 Co-occurrence statistics are collected during training (`labelOccurrence` map) and used only at classification time.
 Single-label data is unaffected because `topLabel` and `topProbability` come from the unchanged base model.
 
+### Logistic regression model
+
+Selected with `--model-type logistic`.
+
+ - **Training store**: every learned text is kept with its latest labels (`corpus.bin` in the model directory), in
+   the order texts were last learned. Learning only adds to the store, so `PUSH /` stays as cheap as with Naive Bayes.
+ - **Background retraining**: every `--retrain-interval` seconds, if the store changed, the weights are retrained
+   from scratch and swapped in atomically; classification always uses the last trained weights. Retraining 10,000
+   short messages takes about a second.
+ - **Features**: word unigrams and bigrams, a length bucket and character 1-5-grams within words, hashed into
+   `2 x 2^--hash-bits` buckets (memory does not grow with the vocabulary), sublinear term frequency, each block
+   L2-normalized.
+ - **Training**: SGD on the log loss with L2 regularization (`--regularization`), `--epochs` passes, positives of each
+   label weighted by `documents / (labels x label documents)`, as scikit-learn's `SGDClassifier` with balanced classes.
+ - **Calibration**: the newest 15% of the store is held out, a model trained on the rest calibrates the decision
+   thresholds for `--target-fpr` (a threshold on `P(label)` and one on `1 - P(label)` for every label, see
+   [Negative label](#negative-label)), then the final model is trained
+   on everything. With fewer than 200 documents the thresholds are not calibrated and `threshold` applies.
+ - **Corrections**: `PATCH /` (and `PUSH /` with `--dedup`) replaces the labels of a text in the store, no ledger is
+   needed. Weights trained with another configuration are discarded on startup and retrained from the store.
+ - **Response**: `posterior` is the one-vs-rest probability normalized over the labels, `probability` the raw
+   one-vs-rest probability, `log_score` the decision value, `scoring_method` is `logistic_regression`. `known_tokens`
+   counts words with trained weights.
+
+#### Spam detection
+
+The recommended configuration for chat spam detection (used by `docker-compose.yml`) is
+`--model-type logistic --placeholders true --stop-words false --dedup true --hash-bits 16 --target-fpr 0.05`, without
+`--filters`, classifying with `"negative_label": "NORMAL"`. The decision then has two steps: whether the message is
+spam at all (`1 - P(NORMAL)` above the threshold calibrated for `--target-fpr` of `NORMAL` documents), and if so the
+more probable of the other labels (eg; `SUSPICIOUS` or `MALICIOUS`). On a near-duplicate grouped cross-validation of
+about 8,900 labelled chat messages this blocked (`MALICIOUS`) 1.5% of `NORMAL` messages against 8.4% for Naive Bayes
+blocking at a probability of 0.68, while catching as much `MALICIOUS` spam; a dedicated second model for `MALICIOUS`
+among spam did no better. `--hash-bits 16` scored the same as 18 with a quarter of the memory.
+
+`--target-fpr` is the share of `NORMAL` documents allowed above the threshold. It is measured on the newest 15% of the
+store with their own labels, so spam learned as `NORMAL` raises the threshold: below 0.05 the model detected only
+15-60% of spam in the same evaluation, depending on the label quality. Label quality matters more than the model:
+training on labels where about a quarter of the spam was labelled `NORMAL` cut the AUC from 0.96 to 0.85.
+
 ## Tokenizer (UnicodeTokenizer)
 
 A Unicode-aware tokenizer that converts text into a list of tokens for model training and classification:
 
- - **Normalisation**: NFKC normalisation followed by `Locale.ROOT` lower-casing.
+ - **Normalisation**: NFKC normalisation followed by `Locale.ROOT` lower-casing. The Turkish dotted capital `İ`
+   (lower-cased to `i` + combining dot) and dotless `ı` are folded to `i`, so a Turkish word gives the same token
+   whatever its case.
+ - **Combining marks** stay in the word they follow: Indic, Thai, Myanmar and other scripts write vowels as marks.
  - **Whitespace/punctuation splitting**: for alphabetic scripts (Latin, Cyrillic, Arabic, Hangul, Thai, etc.).
  - **CJK handling**: scripts that do not use spaces (Han, Hiragana, Katakana) are split into character unigrams. When
    `--cjk-bigrams` is enabled, adjacent CJK characters also form overlapping bigrams.
@@ -1163,22 +1427,6 @@ java -jar bayesian-server.jar \
 | Reduce frequent-label bias      | `--complement true` + `--prior-weight 0.5`   | Enable / lower             |
 | Calibrate over-confident scores | `--online-lr true`                           | Enable                     |
 
-### Threshold calibration
-
-A fixed global threshold rarely suits every label. `calibrateThresholds` independently optimizes each label's threshold
-on a held-out validation set:
-
-```java
-model.calibrateThresholds(List.of(
-    new NaiveBayesModel.ValidationSample("text A", List.of("label1", "label2")),
-    new NaiveBayesModel.ValidationSample("text B", List.of("label3"))
-), "f1");  // or "jaccard", "hamming", "accuracy"
-```
-
-The method grid-searches 19 thresholds (`[0.05, 0.10, ..., 0.95]`) per label and picks the value that maximizes the
-chosen metric. Calibrated thresholds are stored in an internal `ConcurrentHashMap<String, Double>` and are held in
-memory only. They are not persisted.
-
 ### Feature pruning
 
 `pruneVocabulary(int maxFeaturesPerLabel)` keeps only the top-N most discriminative tokens per label:
@@ -1244,6 +1492,9 @@ When `--memory-limit` is set to a positive value, the server enables a two-tier 
    threshold, Caffeine evicts the least-frequently-used label.
  - The `evictionListener` callback calls `modelStore.saveLabel(label, snapshot)` to persist the evicted data to disk
    before dropping it from memory.
+ - Learning and unlearning change a label's counts atomically with its eviction (through the cache's `compute`), so
+   a label is never evicted halfway through a change and no change is made to counts that were already persisted,
+   and the label is weighed again afterwards.
  - On the next access (classify or train), the `CacheLoader` calls `modelStore.loadLabel(label)` to reload the label's
    token counts back into the cache.
  - Labels that were not evicted remain hot in memory and incur zero I/O.
@@ -1280,6 +1531,9 @@ A directory with separate files for each component, enabling partial loading and
     `-- pairs.bin             (pairwise co-occurrence counts)
 ```
 
+When [`--corrections`](#--corrections-bool) is enabled the training ledger is saved next to the directory, as
+`<model-path>.ledger`, before the model on every save.
+
 Label filenames are encoded via `labelToFileName()`: alphanumeric characters pass through, others become `_%04x` escape
 sequences. The index file is a simple JSON object with a `labels` array of `{name, file}` entries.
 
@@ -1311,10 +1565,11 @@ counters are consistent.
 
 An asynchronous training pipeline that decouples HTTP request latency from model training:
 
-- **Bounded queue**: backed by an `ArrayBlockingQueue` with configurable capacity (`--learn-queue-capacity`,
-  default 100000).
-- **Background workers**: `--learner-threads` (default 2) threads pull `TrainingTask` objects from the queue and call
-  `model.train()`.
+- **Bounded queue**: backed by one `ArrayBlockingQueue` per worker, the configurable capacity
+  (`--learn-queue-capacity`, default 100000) is split between them. A task is queued by the hash of its text, so every
+  task of the same text is processed by the same worker in submission order.
+- **Background workers**: `--learner-threads` (default 2) threads pull `TrainingTask` objects from their queue and call
+  `model.train()`, or for a correction (`PATCH /`) remove the text's recorded trainings with `model.untrain()` first.
 - **Non-blocking submission**: `submit()` uses `offer()`. It returns immediately with `false` if the queue is full,
   causing a 503 response.
 - **Throughput counters**: `AtomicLong` fields track `submitted`, `processed`, `failed`, and `rejected` counts.

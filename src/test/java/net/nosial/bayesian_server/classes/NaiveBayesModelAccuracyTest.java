@@ -541,33 +541,6 @@ class NaiveBayesModelAccuracyTest
     }
 
     @Test
-    void calibratedThresholdShouldAffectClassification()
-    {
-        NaiveBayesModel model = newModel();
-        model.train("apple banana", List.of("fruit"));
-        model.train("car truck", List.of("vehicle"));
-        model.train("apple banana", List.of("fruit"));
-        model.train("car truck", List.of("vehicle"));
-
-        // Before calibration.
-        ClassificationResult before = model.classify("apple banana", 0, 0.5);
-
-        // Calibrate with a sample that forces a very high threshold.
-        List<NaiveBayesModel.ValidationSample> samples = List.of(
-                new NaiveBayesModel.ValidationSample("apple banana", List.of("fruit", "vehicle")),
-                new NaiveBayesModel.ValidationSample("car truck", List.of("vehicle"))
-        );
-        model.calibrateThresholds(samples, "f1");
-
-        // After calibration.
-        ClassificationResult after = model.classify("apple banana", 0, 0.5);
-
-        // The calibration should have set some threshold; the result may differ.
-        assertNotNull(after);
-        assertFalse(after.labels().isEmpty());
-    }
-
-    @Test
     void tokenCountsShouldBeAccurateForMixedKnownUnknown()
     {
         NaiveBayesModel model = newModel();

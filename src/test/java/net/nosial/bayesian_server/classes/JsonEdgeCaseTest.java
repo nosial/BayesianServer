@@ -1,9 +1,9 @@
 package net.nosial.bayesian_server.classes;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
-import com.fasterxml.jackson.core.JsonParseException;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.core.exc.StreamReadException;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 import net.nosial.bayesian_server.records.ApiResponse;
 import net.nosial.bayesian_server.records.LabelProbability;
 import org.junit.jupiter.api.Test;
@@ -97,7 +97,8 @@ class JsonEdgeCaseTest
     @Test
     void parseShouldRejectInvalidJson()
     {
-        assertThrows(JsonParseException.class, () -> Json.parse("{invalid".getBytes(), Map.class));
+        IOException e = assertThrows(IOException.class, () -> Json.parse("{invalid".getBytes(), Map.class));
+        assertInstanceOf(StreamReadException.class, e.getCause());
     }
 
     @Test
@@ -142,8 +143,8 @@ class JsonEdgeCaseTest
     {
         ObjectMapper reader = Json.reader();
         assertNotNull(reader);
-        assertFalse(reader.getDeserializationConfig().isEnabled(
-                com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES));
+        assertFalse(reader.deserializationConfig().isEnabled(
+                tools.jackson.databind.DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES));
     }
 
     @Test
@@ -151,8 +152,8 @@ class JsonEdgeCaseTest
     {
         ObjectMapper writer = Json.writer();
         assertNotNull(writer);
-        assertEquals(com.fasterxml.jackson.databind.PropertyNamingStrategies.SNAKE_CASE,
-                writer.getSerializationConfig().getPropertyNamingStrategy());
+        assertEquals(tools.jackson.databind.PropertyNamingStrategies.SNAKE_CASE,
+                writer.serializationConfig().getPropertyNamingStrategy());
     }
 
     @Test
@@ -160,15 +161,15 @@ class JsonEdgeCaseTest
     {
         ObjectMapper mapper = Json.mapper();
         assertNotNull(mapper);
-        assertEquals(mapper.getSerializationConfig().getPropertyNamingStrategy(),
-                Json.writer().getSerializationConfig().getPropertyNamingStrategy());
+        assertEquals(mapper.serializationConfig().getPropertyNamingStrategy(),
+                Json.writer().serializationConfig().getPropertyNamingStrategy());
     }
 
     @Test
     void writerShouldOmitNullFields()
     {
         ObjectMapper writer = Json.writer();
-        assertEquals(JsonInclude.Include.NON_NULL, writer.getSerializationConfig().getDefaultPropertyInclusion()
+        assertEquals(JsonInclude.Include.NON_NULL, writer.serializationConfig().getDefaultPropertyInclusion()
                 .getValueInclusion());
     }
 
@@ -231,7 +232,7 @@ class JsonEdgeCaseTest
         JsonNode node = Json.mapper().readTree(json);
         assertNotNull(node);
         assertEquals(1, node.get("a").asInt());
-        assertEquals("test", node.get("b").asText());
+        assertEquals("test", node.get("b").asString());
     }
 
     @Test

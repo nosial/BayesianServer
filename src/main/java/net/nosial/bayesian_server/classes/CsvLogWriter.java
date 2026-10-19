@@ -22,7 +22,9 @@ import java.util.concurrent.atomic.AtomicLong;
  *
  * <p>Request threads only enqueue pre-escaped rows into a bounded queue and never touch the disk. A single background
  * thread drains the queue in batches through a writer that stays open, flushing whenever the queue runs dry. When the
- * queue is full (the disk cannot keep up), rows are dropped and counted rather than blocking requests.
+ * queue is full (the disk cannot keep up), rows are dropped and counted rather than blocking requests, unless the
+ * writer is lossless: the caller then waits for room, which keeps logs that must be complete (eg; the training
+ * archive, which a model is rebuilt from) in step with what they record.
  */
 public final class CsvLogWriter implements AutoCloseable
 {
@@ -30,6 +32,9 @@ public final class CsvLogWriter implements AutoCloseable
 
     /** Default maximum number of rows buffered in memory before new rows are dropped. */
     public static final int DEFAULT_CAPACITY = 10_000;
+
+    /** Maximum number of rows a lossless writer buffers in memory before callers wait for room. */
+    public static final int LOSSLESS_CAPACITY = 100_000;
 
     private static final int MAX_BATCH = 1_000;
     private static final long DROP_WARN_INTERVAL_MILLIS = 60_000;
@@ -41,6 +46,8 @@ public final class CsvLogWriter implements AutoCloseable
     private final Thread thread;
     private final AtomicLong dropped = new AtomicLong();
     private final AtomicLong lastDropWarnMillis = new AtomicLong();
+    private final boolean lossless;
+    private volatile boolean rotateOnHeaderChange;
     private volatile boolean running = true;
 
     /**
@@ -53,6 +60,21 @@ public final class CsvLogWriter implements AutoCloseable
      */
     public CsvLogWriter(Path path, String header, int capacity, String name)
     {
+        this(path, header, capacity, name, false);
+    }
+
+    /**
+     * CsvLogWriter Constructor
+     *
+     * @param path the CSV file to append to; created with {@code header} if it does not exist
+     * @param header the header row written when the file is created
+     * @param capacity maximum number of rows buffered in memory
+     * @param name the name of the background writer thread
+     * @param lossless {@code true} to make callers wait for room when the buffer is full instead of dropping rows
+     */
+    public CsvLogWriter(Path path, String header, int capacity, String name, boolean lossless)
+    {
+        this.lossless = lossless;
         this.path = path;
         this.header = header;
         this.queue = new ArrayBlockingQueue<>(capacity);
@@ -61,7 +83,7 @@ public final class CsvLogWriter implements AutoCloseable
     }
 
     /**
-     * Enqueues an already-escaped CSV row without blocking.
+     * Enqueues an already-escaped CSV row. Never blocks, unless the writer is lossless and its buffer is full.
      *
      * @param row the CSV row to append (without a trailing newline)
      * @return {@code true} if the row was enqueued, {@code false} if it was dropped
@@ -71,6 +93,19 @@ public final class CsvLogWriter implements AutoCloseable
         if (this.running && this.queue.offer(row))
         {
             return true;
+        }
+
+        if (this.running && this.lossless)
+        {
+            try
+            {
+                this.queue.put(row);
+                return true;
+            }
+            catch (InterruptedException e)
+            {
+                Thread.currentThread().interrupt();
+            }
         }
 
         long total = this.dropped.incrementAndGet();
@@ -185,6 +220,17 @@ public final class CsvLogWriter implements AutoCloseable
     }
 
     /**
+     * Makes the writer move an existing file written with another header aside (to {@code <file>.old-<millis>})
+     * instead of appending rows with other columns to it. Call before the first row is offered.
+     *
+     * @param rotate {@code true} to move files with another header aside
+     */
+    public void setRotateOnHeaderChange(boolean rotate)
+    {
+        this.rotateOnHeaderChange = rotate;
+    }
+
+    /**
      * Opens the CSV file for appending, writing the header row first if the file is new or empty.
      *
      * @return a buffered writer positioned at the end of the file
@@ -192,6 +238,22 @@ public final class CsvLogWriter implements AutoCloseable
      */
     private BufferedWriter open() throws IOException
     {
+        if (this.rotateOnHeaderChange && Files.exists(this.path) && Files.size(this.path) > 0)
+        {
+            String existingHeader;
+            try (java.io.BufferedReader reader = Files.newBufferedReader(this.path, StandardCharsets.UTF_8))
+            {
+                existingHeader = reader.readLine();
+            }
+
+            if (!this.header.equals(existingHeader))
+            {
+                Path old = this.path.resolveSibling(this.path.getFileName() + ".old-" + System.currentTimeMillis());
+                Files.move(this.path, old);
+                LOGGER.info("CSV log {} was written with other columns, moved it to {}", this.path, old);
+            }
+        }
+
         boolean needsHeader = !Files.exists(this.path) || Files.size(this.path) == 0;
         // FileOutputStream is not an interruptible channel, so the interrupt from close() cannot abort a write
         BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(new FileOutputStream(this.path.toFile(), true), StandardCharsets.UTF_8), 64 * 1024);

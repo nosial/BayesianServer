@@ -538,6 +538,32 @@ class SecurityTest
     }
 
     @Test
+    void labelGrowingInPlaceIsWeighedAgainAndEvicted(@TempDir Path dir) throws IOException
+    {
+        ModelStore store = new ModelStore(dir.resolve("grow"));
+        NaiveBayesModel model = newModel();
+        model.setModelStore(store);
+        model.setMemoryLimitMB(1);
+
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < 6000; i++)
+        {
+            sb.append("token_").append(i).append(' ');
+        }
+
+        String text = sb.toString();
+        model.train(text, List.of("heavy"));
+        assertFalse(model.isLabelLoaded("heavy"), "a label over the memory limit is evicted once it grew");
+
+        // The tokenizer splits at the underscore ("token" and the number), so count the distinct tokens it produces
+        long distinctTokens = new UnicodeTokenizer(1, 40, true).tokenize(text).stream().distinct().count();
+        LabelSnapshot persisted = store.loadLabel("heavy");
+        assertNotNull(persisted, "the evicted label is persisted");
+        assertEquals(distinctTokens, persisted.tokens().length, "no learned token is lost by the eviction");
+        assertEquals("heavy", model.classify("token_1 token_2", 0, 0.5).topLabel());
+    }
+
+    @Test
     void shouldPersistAutomaticallyEvictedLabelToDisk(@TempDir Path dir) throws IOException
     {
         Path folder = dir.resolve("auto-evict");
@@ -785,7 +811,7 @@ class SecurityTest
     }
 
     @Test
-    void shouldBeNoOpWhenEvictingWithoutModelStore()
+    void shouldBeNoOpWhenEvictingWithoutModelStore() throws IOException
     {
         NaiveBayesModel model = newModel();
         model.train("some text", List.of("x"));
