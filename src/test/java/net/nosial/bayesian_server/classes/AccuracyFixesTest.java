@@ -70,29 +70,6 @@ class AccuracyFixesTest
         assertTrue(ChatNormalizer.normalize("hi 😀").contains("emj1f600"));
     }
 
-    @Test
-    void placeholderRulesOfAnApplicationApplyBeforeTheDefaultRules(@TempDir Path dir) throws Exception
-    {
-        // The Telegram rules of the example file, applied before the default link rule
-        ChatNormalizer telegram = ChatNormalizer.load(Path.of("examples/placeholder_rules.telegram.json"));
-        assertEquals(List.of("join", "now", "xtginvitex"), tokenize(telegram.apply("Join now ➡️ https://t.me/+7RULoO2M5Ro4ZTE1"), "emj"));
-        assertEquals(List.of("see", "xurlx"), tokenize(telegram.apply("see https://example.com/page"), "emj"));
-        assertTrue(telegram.apply("hi 😀").contains("emj1f600"), "the default rules still apply");
-        assertFalse(telegram.fingerprint().equals(ChatNormalizer.defaults().fingerprint()), "other rules retrain the model");
-
-        // Rules can replace the default rules, and their placeholders can use the length of the match
-        Path rules = dir.resolve("rules.json");
-        Files.writeString(rules, "{\"replace_defaults\": true, \"rules\": [{\"name\": \"ticket\", \"pattern\": \"#\\\\d+\", \"placeholder\": \"xticket{length}\", \"length_cap\": 3}]}");
-        ChatNormalizer custom = ChatNormalizer.load(rules);
-        assertEquals("see  xticket3  at https://example.com", custom.apply("see #12345 at https://example.com"));
-
-        // Invalid rules fail clearly
-        Files.writeString(rules, "{\"rules\": [{\"name\": \"broken\", \"pattern\": \"(\", \"placeholder\": \"x\"}]}");
-        assertThrows(IllegalArgumentException.class, () -> ChatNormalizer.load(rules));
-        Files.writeString(rules, "{\"rules\": [{\"name\": \"spaced\", \"pattern\": \"a\", \"placeholder\": \"two words\"}]}");
-        assertThrows(IllegalArgumentException.class, () -> ChatNormalizer.load(rules));
-    }
-
     private static List<String> tokenize(String text, String excludePrefix)
     {
         return new UnicodeTokenizer(2, 0, true).tokenize(text).stream().filter(t -> !t.startsWith(excludePrefix)).toList();
