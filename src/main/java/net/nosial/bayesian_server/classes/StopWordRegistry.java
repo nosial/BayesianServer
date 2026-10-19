@@ -1,7 +1,8 @@
 package net.nosial.bayesian_server.classes;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -40,7 +41,17 @@ public final class StopWordRegistry
      */
     public StopWordRegistry()
     {
-        Set<String> codes = discoverLanguageCodes();
+        this(true);
+    }
+
+    /**
+     * Loads stop-words for all available languages, or none when disabled (every lookup then returns an empty set).
+     *
+     * @param enabled {@code false} to keep every word
+     */
+    public StopWordRegistry(boolean enabled)
+    {
+        Set<String> codes = enabled ? discoverLanguageCodes() : Set.of();
         Map<String, Set<String>> loaded = new HashMap<>();
 
         for (String lang : codes)
@@ -62,14 +73,14 @@ public final class StopWordRegistry
                 {
                     for (JsonNode node : root)
                     {
-                        words.add(node.asText().toLowerCase(Locale.ROOT));
+                        words.add(node.asString().toLowerCase(Locale.ROOT));
                     }
                 }
 
                 loaded.put(lang, Collections.unmodifiableSet(words));
                 LOGGER.trace("Loaded {} stop-words for language '{}'", words.size(), lang);
             }
-            catch (IOException e)
+            catch (IOException | JacksonException e)
             {
                 LOGGER.warn("Failed to load stop-words for language '{}'", lang, e);
             }
