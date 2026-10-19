@@ -23,6 +23,12 @@ services:
       - BS_HOST=0.0.0.0
       - BS_SAVE_INTERVAL=${BS_SAVE_INTERVAL:-60}
       - BS_ARCHIVE=/data/archive/archive.csv
+      - BS_MODEL_TYPE=${BS_MODEL_TYPE:-logistic}
+      - BS_PLACEHOLDERS=${BS_PLACEHOLDERS:-true}
+      - BS_STOP_WORDS=${BS_STOP_WORDS:-false}
+      - BS_DEDUP=${BS_DEDUP:-true}
+      - BS_HASH_BITS=${BS_HASH_BITS:-16}
+      - BS_TARGET_FPR=${BS_TARGET_FPR:-0.05}
 
     logging:
       driver: json-file
