@@ -127,27 +127,6 @@ public final class Utilities
     }
 
     /**
-     * Evaluates a classification metric from a confusion matrix.
-     *
-     * @param tp true positives
-     * @param fp false positives
-     * @param tn true negatives
-     * @param fn false negatives
-     * @param metric the metric name
-     * @return the metric score
-     */
-    public static double evaluateMetric(long tp, long fp, long tn, long fn, String metric)
-    {
-        return switch (metric)
-        {
-            case "f1" -> (tp + fp + fn == 0) ? 0.0 : (2.0 * tp) / (2.0 * tp + fp + fn);
-            case "jaccard" -> (tp + fp + fn == 0) ? 0.0 : (double) tp / (tp + fp + fn);
-            case "hamming", "accuracy" -> (tp + fp + tn + fn == 0) ? 0.0 : (double) (tp + tn) / (tp + fp + tn + fn);
-            default -> throw new IllegalArgumentException("Unknown metric: " + metric);
-        };
-    }
-
-    /**
      * Computes term frequencies from a list of tokens.
      *
      * @param tokens the list of tokens
