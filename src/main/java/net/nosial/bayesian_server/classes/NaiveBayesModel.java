@@ -25,6 +25,7 @@ import java.util.Queue;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.ToLongFunction;
 
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
@@ -80,9 +81,6 @@ public final class NaiveBayesModel
 
     /** Protects global state consistency during vocabulary pruning. */
     private final ReentrantReadWriteLock globalLock = new ReentrantReadWriteLock();
-
-    /** Per-label calibrated thresholds (optional); falls back to the global threshold when absent. */
-    private final ConcurrentHashMap<String, Double> calibratedThresholds = new ConcurrentHashMap<>();
 
     /** Label co-occurrence tracking for Bayesian chain post-processing. */
     private final ConcurrentHashMap<String, AtomicLong> labelDocumentCount = new ConcurrentHashMap<>();
@@ -331,6 +329,30 @@ public final class NaiveBayesModel
 
         List<String> tokens = this.tokenizer.tokenize(text, stopWords);
         Map<String, Integer> termFrequencies = Utilities.termFrequencies(tokens);
+
+        // Training holds the shared lock: any number of trainers and classifiers run concurrently, while
+        // untrain() and compaction, which remove entries, take the exclusive lock and never race with an increment.
+        this.globalLock.readLock().lock();
+
+        try
+        {
+            trainLocked(tokens, termFrequencies, uniqueLabels);
+        }
+        finally
+        {
+            this.globalLock.readLock().unlock();
+        }
+    }
+
+    /**
+     * Applies the counts of one tokenized document to the model, the caller holds the shared lock.
+     *
+     * @param tokens the document tokens
+     * @param termFrequencies the term frequencies of the tokens
+     * @param uniqueLabels the labels of the document
+     */
+    private void trainLocked(List<String> tokens, Map<String, Integer> termFrequencies, Set<String> uniqueLabels)
+    {
         int termCount = termFrequencies.size();
 
         // Compute NB features for online LR training BEFORE updating counts.
@@ -359,16 +381,19 @@ public final class NaiveBayesModel
             LabelStats stats = this.labelMetadata.computeIfAbsent(label, k -> new LabelStats());
             LOGGER.trace("Training label '{}' with {} terms", label, termCount);
             stats.documentCount.incrementAndGet();
-            ConcurrentHashMap<String, AtomicLong> tcs = this.tokenCountsCache.get(label);
-
-            long addedTokens = 0;
-            for (Map.Entry<String, Integer> entry : termFrequencies.entrySet())
+            long addedTokens = mutateLabel(label, tcs ->
             {
-                int freq = entry.getValue();
-                tcs.computeIfAbsent(entry.getKey(), k -> new AtomicLong()).addAndGet(freq);
-                this.globalTokenCounts.computeIfAbsent(entry.getKey(), k -> new AtomicLong()).addAndGet(freq);
-                addedTokens += freq;
-            }
+                long added = 0;
+                for (Map.Entry<String, Integer> entry : termFrequencies.entrySet())
+                {
+                    int freq = entry.getValue();
+                    tcs.computeIfAbsent(entry.getKey(), k -> new AtomicLong()).addAndGet(freq);
+                    this.globalTokenCounts.computeIfAbsent(entry.getKey(), k -> new AtomicLong()).addAndGet(freq);
+                    added += freq;
+                }
+
+                return added;
+            });
 
             stats.totalTokens.addAndGet(addedTokens);
             this.globalTotalTokens.addAndGet(addedTokens);
@@ -415,6 +440,216 @@ public final class NaiveBayesModel
         }
 
         LOGGER.trace("Total documents: {}, version: {}", this.totalDocuments.get(), this.version.get());
+    }
+
+    /**
+     * Removes documents that were previously learned with {@link #train(String, Collection, Set)}, reversing
+     * exactly what training added: token counts, label document and token totals, document frequencies, the
+     * total document count and label co-occurrences. Tokens whose count drops to zero leave the vocabulary,
+     * so after removal the model is identical to one that never learned the documents.
+     *
+     * <p>The text, labels and stop-words must be the ones the documents were learned with, otherwise other
+     * documents' counts would be removed. Counts never drop below zero, so a mismatch (eg; a document that was
+     * never learned) cannot corrupt the model. Online logistic regression weights are not reverted. A label
+     * whose last document is removed is removed from the model, as if it had never been learned.
+     *
+     * @param text document text the documents were learned with
+     * @param docLabels the labels the documents were learned with
+     * @param stopWords the stop-words the documents were learned with
+     * @param times how many times the document was learned with these labels (must be {@code >= 1})
+     */
+    public void untrain(String text, Collection<String> docLabels, java.util.Set<String> stopWords, long times)
+    {
+        if (docLabels == null || docLabels.isEmpty())
+        {
+            throw new IllegalArgumentException("at least one label is required to unlearn a document");
+        }
+
+        if (times < 1)
+        {
+            throw new IllegalArgumentException("times must be >= 1");
+        }
+
+        Set<String> uniqueLabels = new LinkedHashSet<>();
+        for (String label : docLabels)
+        {
+            Utilities.requireNonBlankLabel(label);
+            uniqueLabels.add(label);
+        }
+
+        Map<String, Integer> termFrequencies = Utilities.termFrequencies(this.tokenizer.tokenize(text, stopWords));
+        long docTokenCount = 0;
+        for (int f : termFrequencies.values())
+        {
+            docTokenCount += f;
+        }
+
+        this.globalLock.writeLock().lock();
+
+        try
+        {
+            for (String token : termFrequencies.keySet())
+            {
+                decrement(this.globalDocumentFrequency, token, times);
+            }
+
+            decrementTotal(this.totalDocumentTokens, docTokenCount * times);
+            for (String label : uniqueLabels)
+            {
+                LabelStats stats = this.labelMetadata.get(label);
+                if (stats == null)
+                {
+                    continue;
+                }
+
+                decrementTotal(stats.documentCount, times);
+                long removedTokens = mutateLabel(label, tcs ->
+                {
+                    long removed = 0;
+                    for (Map.Entry<String, Integer> entry : termFrequencies.entrySet())
+                    {
+                        long amount = entry.getValue() * times;
+                        removed += decrement(tcs, entry.getKey(), amount);
+                        decrement(this.globalTokenCounts, entry.getKey(), amount);
+                    }
+
+                    return removed;
+                });
+
+                decrementTotal(stats.totalTokens, removedTokens);
+                decrementTotal(this.globalTotalTokens, removedTokens);
+                AtomicLong labelDocs = this.labelDocumentCount.get(label);
+                if (labelDocs != null)
+                {
+                    decrementTotal(labelDocs, times);
+                }
+            }
+
+            decrementTotal(this.totalDocuments, times);
+            for (String label : uniqueLabels)
+            {
+                LabelStats stats = this.labelMetadata.get(label);
+                if (stats != null && stats.documentCount.get() == 0)
+                {
+                    removeLabelLocked(label, stats);
+                }
+            }
+
+            if (this.useLabelChain)
+            {
+                for (String a : uniqueLabels)
+                {
+                    ConcurrentHashMap<String, AtomicLong> pairs = this.labelOccurrence.get(a);
+                    if (pairs == null)
+                    {
+                        continue;
+                    }
+
+                    for (String b : uniqueLabels)
+                    {
+                        if (!a.equals(b))
+                        {
+                            decrement(pairs, b, times);
+                        }
+                    }
+                }
+            }
+
+            this.version.incrementAndGet();
+        }
+        finally
+        {
+            this.globalLock.writeLock().unlock();
+        }
+
+        LOGGER.trace("Unlearned document {} time(s) for labels {}", times, uniqueLabels);
+    }
+
+    /**
+     * Changes the token counts of a label in place. The change is atomic with respect to the eviction of the label
+     * (which persists its counts under a memory limit), so no change is made to counts that were already persisted
+     * and dropped, and the label is weighed again for the memory limit afterwards: Caffeine only weighs an entry when
+     * it's written, so every change to the counts of a label goes through here.
+     *
+     * @param label the label whose counts to change
+     * @param mutation changes the counts and returns a value for the caller (eg; the number of tokens added)
+     * @return the value returned by the mutation
+     */
+    private long mutateLabel(String label, ToLongFunction<ConcurrentHashMap<String, AtomicLong>> mutation)
+    {
+        long[] result = new long[1];
+        this.tokenCountsCache.asMap().compute(label, (key, counts) ->
+        {
+            ConcurrentHashMap<String, AtomicLong> current = counts != null ? counts : loadLabel(key);
+            result[0] = mutation.applyAsLong(current);
+            return current;
+        });
+
+        return result[0];
+    }
+
+    /**
+     * Removes a label that no longer has any document, including any token counts left by an inexact removal.
+     * The caller holds the exclusive lock.
+     *
+     * @param label the label to remove
+     * @param stats the statistics of the label
+     */
+    private void removeLabelLocked(String label, LabelStats stats)
+    {
+        ConcurrentHashMap<String, AtomicLong> tcs = this.tokenCountsCache.get(label);
+        for (Map.Entry<String, AtomicLong> entry : tcs.entrySet())
+        {
+            decrement(this.globalTokenCounts, entry.getKey(), entry.getValue().get());
+        }
+
+        decrementTotal(this.globalTotalTokens, stats.totalTokens.get());
+        this.labelMetadata.remove(label);
+        this.labelDocumentCount.remove(label);
+        this.labelOccurrence.remove(label);
+        this.labelOccurrence.values().forEach(pairs -> pairs.remove(label));
+
+        // An empty map rather than an invalidation: with a memory limit the label may still have a file in the
+        // store, which must not be loaded back if the label is learned again
+        this.tokenCountsCache.put(label, new ConcurrentHashMap<>());
+        LOGGER.debug("Removed label '{}' after its last document was unlearned", label);
+    }
+
+    /**
+     * Decrements a counter of a map by up to {@code amount} without going below zero, removing it at zero. The
+     * caller holds the exclusive lock.
+     *
+     * @param counts the map holding the counter
+     * @param key the key of the counter
+     * @param amount the amount to remove
+     * @return the amount actually removed
+     */
+    private static long decrement(ConcurrentHashMap<String, AtomicLong> counts, String key, long amount)
+    {
+        AtomicLong counter = counts.get(key);
+        if (counter == null)
+        {
+            return 0;
+        }
+
+        long removed = Math.min(counter.get(), amount);
+        if (counter.addAndGet(-removed) <= 0)
+        {
+            counts.remove(key);
+        }
+
+        return removed;
+    }
+
+    /**
+     * Decrements a total by up to {@code amount} without going below zero. The caller holds the exclusive lock.
+     *
+     * @param total the total to decrement
+     * @param amount the amount to remove
+     */
+    private static void decrementTotal(AtomicLong total, long amount)
+    {
+        total.set(Math.max(0, total.get() - amount));
     }
 
     /**
@@ -478,7 +713,7 @@ public final class NaiveBayesModel
         else if (this.useOnlineLR)
         {
             predicted = ranked.stream()
-                    .filter(lp -> !Double.isNaN(lp.lrProbability()) && lp.lrProbability() >= effectiveThreshold(lp.label(), threshold))
+                    .filter(lp -> !Double.isNaN(lp.lrProbability()) && lp.lrProbability() >= threshold)
                     .sorted(Comparator.comparingDouble(LabelProbability::lrProbability).reversed())
                     .map(LabelProbability::label)
                     .toList();
@@ -487,7 +722,7 @@ public final class NaiveBayesModel
         else
         {
             predicted = ranked.stream()
-                    .filter(lp -> lp.probability() >= effectiveThreshold(lp.label(), threshold))
+                    .filter(lp -> lp.probability() >= threshold)
                     .sorted(Comparator.comparingDouble(LabelProbability::probability).reversed())
                     .map(LabelProbability::label)
                     .toList();
@@ -702,19 +937,6 @@ public final class NaiveBayesModel
     }
 
     /**
-     * Returns the calibrated threshold for a label, or the fallback if none is set.
-     *
-     * @param label    the label to look up
-     * @param fallback the default threshold to use when no calibration exists
-     * @return the effective threshold for the label
-     */
-    private double effectiveThreshold(String label, double fallback)
-    {
-        Double t = this.calibratedThresholds.get(label);
-        return t != null ? t : fallback;
-    }
-
-    /**
      * Returns the cached Chow-Liu ordering if it is still valid for the current model version,
      * otherwise rebuilds the tree and caches the result.
      *
@@ -740,7 +962,7 @@ public final class NaiveBayesModel
         if (chain.isEmpty())
         {
             return ranked.stream()
-                    .filter(lp -> lp.probability() >= effectiveThreshold(lp.label(), fallbackThreshold))
+                    .filter(lp -> lp.probability() >= fallbackThreshold)
                     .sorted(Comparator.comparingDouble(LabelProbability::probability).reversed())
                     .map(LabelProbability::label)
                     .toList();
@@ -798,7 +1020,7 @@ public final class NaiveBayesModel
         }
 
         return ranked.stream()
-                .filter(lp -> continuousPreds.getOrDefault(lp.label(), 0.0) >= effectiveThreshold(lp.label(), fallbackThreshold))
+                .filter(lp -> continuousPreds.getOrDefault(lp.label(), 0.0) >= fallbackThreshold)
                 .sorted(Comparator.comparingDouble(LabelProbability::probability).reversed())
                 .map(LabelProbability::label)
                 .toList();
@@ -978,106 +1200,6 @@ public final class NaiveBayesModel
     }
 
     /**
-     * A single validation sample used for threshold calibration.
-     *
-     * @param text The text sample to validate
-     * @param labels Labels to validate against
-     */
-    public record ValidationSample(String text, List<String> labels) { }
-
-    /**
-     * Calibrates per-label decision thresholds using a validation set and a chosen metric.
-     *
-     * @param samples the validation samples
-     * @param metric  the metric to optimize (one of {@code f1}, {@code jaccard}, {@code hamming}, {@code accuracy})
-     * @throws IllegalArgumentException if samples are empty or the metric is unknown
-     */
-    public void calibrateThresholds(List<ValidationSample> samples, String metric)
-    {
-        if (samples == null || samples.isEmpty())
-        {
-            throw new IllegalArgumentException("samples must not be empty");
-        }
-        String m = metric.toLowerCase();
-        if (!List.of("f1", "jaccard", "hamming", "accuracy").contains(m))
-        {
-            throw new IllegalArgumentException("metric must be one of: f1, jaccard, hamming, accuracy");
-        }
-
-        List<Map<String, Double>> sampleProbabilities = new ArrayList<>(samples.size());
-        for (ValidationSample sample : samples) {
-            ProbabilityResult result = computeProbabilities(this.tokenizer.tokenize(sample.text()));
-            Map<String, Double> map = new java.util.HashMap<>();
-            for (LabelProbability lp : result.ranked())
-            {
-                map.put(lp.label(), lp.probability());
-            }
-            sampleProbabilities.add(map);
-        }
-
-        Set<String> allLabels = new java.util.HashSet<>();
-        for (ValidationSample sample : samples)
-        {
-            allLabels.addAll(sample.labels());
-        }
-
-        double[] candidates = new double[19];
-        for (int i = 0; i < candidates.length; i++)
-        {
-            candidates[i] = 0.05 * (i + 1);
-        }
-
-        for (String label : allLabels)
-        {
-            double bestThreshold = 0.5;
-            double bestScore = -1.0;
-
-            for (double t : candidates)
-            {
-                long tp = 0, fp = 0, tn = 0, fn = 0;
-                for (int i = 0; i < samples.size(); i++)
-                {
-                    ValidationSample sample = samples.get(i);
-                    Double prob = sampleProbabilities.get(i).get(label);
-                    boolean predicted = prob != null && prob >= t;
-                    boolean actual = sample.labels().contains(label);
-                    if (predicted && actual)
-                    {
-                        tp++;
-                    }
-                    else if (predicted)
-                    {
-                        fp++;
-                    }
-                    else if (actual)
-                    {
-                        fn++;
-                    }
-                    else
-                    {
-                        tn++;
-                    }
-                }
-
-                double score = Utilities.evaluateMetric(tp, fp, tn, fn, m);
-
-                if (score > bestScore || (score == bestScore && Math.abs(t - 0.5) < Math.abs(bestThreshold - 0.5)))
-                {
-                    bestScore = score;
-                    bestThreshold = t;
-                }
-            }
-
-            if (bestScore >= 0)
-            {
-                this.calibratedThresholds.put(label, bestThreshold);
-            }
-        }
-    }
-
-
-
-    /**
      * Prunes the vocabulary for each label to the top {@code maxFeaturesPerLabel} tokens by
      * information gain. This reduces memory and can improve generalization.
      *
@@ -1118,31 +1240,34 @@ public final class NaiveBayesModel
             long globalTotal = this.globalTotalTokens.get();
             long complementTotal = Math.max(0, globalTotal - labelTotal);
 
-            ConcurrentHashMap<String, AtomicLong> tcs = this.tokenCountsCache.get(label);
-
-            List<ScoredToken> scored = new ArrayList<>();
-            for (Map.Entry<String, AtomicLong> te : tcs.entrySet())
+            long removedTokens = mutateLabel(label, tcs ->
             {
-                long inCount = te.getValue().get();
-                AtomicLong globalAdder = this.globalTokenCounts.get(te.getKey());
-                long globalCount = globalAdder == null ? 0 : globalAdder.get();
-                long outCount = Math.max(0, globalCount - inCount);
-                double ig = informationGain(inCount, outCount, labelTotal, complementTotal);
-                scored.add(new ScoredToken(te.getKey(), inCount, ig));
-            }
-
-            scored.sort((a, b) -> Double.compare(b.ig, a.ig));
-
-            int keep = Math.min(maxFeaturesPerLabel, scored.size());
-            long removedTokens = 0;
-            for (int i = keep; i < scored.size(); i++)
-            {
-                AtomicLong adder = tcs.remove(scored.get(i).token);
-                if (adder != null)
+                List<ScoredToken> scored = new ArrayList<>();
+                for (Map.Entry<String, AtomicLong> te : tcs.entrySet())
                 {
-                    removedTokens += adder.get();
+                    long inCount = te.getValue().get();
+                    AtomicLong globalAdder = this.globalTokenCounts.get(te.getKey());
+                    long globalCount = globalAdder == null ? 0 : globalAdder.get();
+                    long outCount = Math.max(0, globalCount - inCount);
+                    double ig = informationGain(inCount, outCount, labelTotal, complementTotal);
+                    scored.add(new ScoredToken(te.getKey(), inCount, ig));
                 }
-            }
+
+                scored.sort((a, b) -> Double.compare(b.ig, a.ig));
+
+                int keep = Math.min(maxFeaturesPerLabel, scored.size());
+                long removed = 0;
+                for (int i = keep; i < scored.size(); i++)
+                {
+                    AtomicLong adder = tcs.remove(scored.get(i).token);
+                    if (adder != null)
+                    {
+                        removed += adder.get();
+                    }
+                }
+
+                return removed;
+            });
 
             if (removedTokens > 0)
             {
@@ -1312,16 +1437,6 @@ public final class NaiveBayesModel
     public double smoothingAlpha()
     {
         return this.alpha;
-    }
-
-    /**
-     * Returns {@code true} if at least one label has been registered or learned.
-     *
-     * @return {@code true} if the model has at least one label
-     */
-    public boolean hasLabels()
-    {
-        return !this.labelMetadata.isEmpty();
     }
 
     /**
@@ -1517,26 +1632,6 @@ public final class NaiveBayesModel
     }
 
     /**
-     * Returns a snapshot of the per-label calibrated thresholds.
-     *
-     * @return an immutable map of label to threshold
-     */
-    public Map<String, Double> snapshotCalibratedThresholds()
-    {
-        return Map.copyOf(this.calibratedThresholds);
-    }
-
-    /**
-     * Restores per-label calibrated thresholds from a snapshot.
-     *
-     * @param thresholds a map of label to threshold
-     */
-    public void restoreCalibratedThresholds(Map<String, Double> thresholds)
-    {
-        this.calibratedThresholds.putAll(thresholds);
-    }
-
-    /**
      * Returns a snapshot of all online LR weight vectors.
      *
      * @return an immutable map of label to weight-vector copy, or an empty map if online LR is disabled
@@ -1713,25 +1808,41 @@ public final class NaiveBayesModel
     }
 
     /**
-     * Evicts a single label's token→count map from memory. The label is NOT persisted;
-     * callers are responsible for saving via {@link #restoreLabel} or a prior full save.
+     * Evicts a single label's token→count map from memory, persisting it to the store first like an automatic
+     * eviction, so it's loaded back on its next use. Does nothing without a memory limit or a store supporting
+     * per-label operations. Removing the entry from the cache doesn't notify the eviction listener (it's not an
+     * eviction), so the label is persisted here, atomically with its removal.
      *
      * @param label The label to evict
+     * @throws IOException If the label could not be persisted, it stays in memory then
      */
-    public void evictLabel(String label)
+    public void evictLabel(String label) throws IOException
     {
-        if (!this.storeSupportsLabelOps || this.modelStore == null)
+        if (!this.storeSupportsLabelOps || this.modelStore == null || memoryLimitBytes() <= 0)
         {
             return;
         }
 
-        long limit = memoryLimitBytes();
-        if (limit <= 0)
+        IOException[] failure = new IOException[1];
+        this.tokenCountsCache.asMap().computeIfPresent(label, (key, counts) ->
         {
-            return;
+            try
+            {
+                persistLabel(key, counts);
+                return null;
+            }
+            catch (IOException e)
+            {
+                failure[0] = e;
+                return counts;
+            }
+        });
+
+        if (failure[0] != null)
+        {
+            throw failure[0];
         }
 
-        this.tokenCountsCache.invalidate(label);
         LOGGER.debug("Evicted label '{}' from memory", label);
     }
 
