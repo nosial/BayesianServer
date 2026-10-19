@@ -236,8 +236,7 @@ class SmsSpamDatasetEvaluationTest
         ModelStore store = new ModelStore(folder);
         store.save(model);
         model.setModelStore(store);
-
-        model.setMemoryLimitMB(1);
+        model.setMemoryLimitMB(64);
         model.evictLabel("ham");
         assertTrue(model.isLabelLoaded("spam"));
         assertFalse(model.isLabelLoaded("ham"));
