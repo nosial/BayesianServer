@@ -180,6 +180,47 @@ public final class LanguageModelManager
     }
 
     /**
+     * Returns whether {@link #train(String, Collection, String, Set, Set)} also trains the global {@code "und"}
+     * model for the given language code.
+     *
+     * @param languageCode The ISO 639-1 language code a document is trained with
+     * @return {@code true} if the global model is trained as well
+     */
+    public boolean trainsGlobalModel(String languageCode)
+    {
+        return this.globalTraining && !GLOBAL_MODEL.equals(languageCode);
+    }
+
+    /**
+     * Removes documents previously learned with {@link #train(String, Collection, String, Set, Set)}, from the
+     * per-language model and, when they were also learned by it, from the global {@code "und"} model. See
+     * {@link NaiveBayesModel#untrain(String, Collection, Set, long)}.
+     *
+     * @param text The document text the documents were learned with
+     * @param labels The labels the documents were learned with
+     * @param languageCode The language code the documents were learned with
+     * @param stopWords The stop-words the per-language model learned the documents with
+     * @param globalStopWords The stop-words the global model learned the documents with
+     * @param globalTrained Whether the global model also learned the documents
+     * @param times How many times the document was learned with these labels
+     */
+    public void untrain(String text, Collection<String> labels, String languageCode, Set<String> stopWords,
+                        Set<String> globalStopWords, boolean globalTrained, long times)
+    {
+        NaiveBayesModel model = this.models.get(languageCode);
+        if (model != null)
+        {
+            model.untrain(text, labels, stopWords, times);
+        }
+
+        NaiveBayesModel globalModel = this.models.get(GLOBAL_MODEL);
+        if (globalTrained && globalModel != null && !GLOBAL_MODEL.equals(languageCode))
+        {
+            globalModel.untrain(text, labels, globalStopWords, times);
+        }
+    }
+
+    /**
      * Sets whether every document is also trained into the global {@code "und"} model, so that
      * classification has a fallback that has seen every label regardless of language.
      *
