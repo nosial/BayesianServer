@@ -18,7 +18,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.JsonNode;
 
 public final class ModelStore implements ModelStoreInterface
 {
@@ -31,7 +32,6 @@ public final class ModelStore implements ModelStoreInterface
     private static final String PAIRS_FILE = "pairs.bin";
     private static final String DF_FILE = "df.bin";
     private static final String LR_WEIGHTS_FILE = "lr_weights.bin";
-    private static final String CALIBRATED_THRESHOLDS_FILE = "thresholds.bin";
 
     private final Path folderPath;
     private final Path tempPath;
@@ -76,8 +76,6 @@ public final class ModelStore implements ModelStoreInterface
         LOGGER.trace("Wrote document frequency data");
         this.writeLRWeights(this.tempPath, model);
         LOGGER.trace("Wrote LR weights data");
-        this.writeCalibratedThresholds(this.tempPath, model);
-        LOGGER.trace("Wrote calibrated thresholds data");
 
         // Durability: if the target directory already exists, replace it.
         LOGGER.debug("Moving temp directory {} to {}", this.tempPath, this.folderPath);
@@ -111,7 +109,6 @@ public final class ModelStore implements ModelStoreInterface
         this.readCooccurrence(this.folderPath, target);
         this.readDocumentFrequency(this.folderPath, target);
         this.readLRWeights(this.folderPath, target);
-        this.readCalibratedThresholds(this.folderPath, target);
 
         LOGGER.info("Loaded model from {} ({} labels, {} docs)", folderPath, target.labelCount(), target.totalDocumentCount());
         return true;
@@ -156,7 +153,9 @@ public final class ModelStore implements ModelStoreInterface
     @Override
     public LabelSnapshot loadLabel(String labelName) throws IOException
     {
-        if (!isValidFolder(this.folderPath))
+        // Only the label index is required, not a full save: a label evicted under the memory limit before the model
+        // was first saved exists only as its label file and index entry
+        if (!Files.isDirectory(this.folderPath))
         {
             LOGGER.debug("No model source found to load label '{}'", labelName);
             return null;
@@ -322,7 +321,16 @@ public final class ModelStore implements ModelStoreInterface
             return List.of();
         }
 
-        JsonNode root = Json.reader().readTree(indexFile.toFile());
+        JsonNode root;
+        try
+        {
+            root = Json.reader().readTree(indexFile.toFile());
+        }
+        catch (JacksonException e)
+        {
+            throw new IOException("Invalid label index: " + e.getOriginalMessage(), e);
+        }
+
         JsonNode labels = root.get("labels");
         if (labels == null || !labels.isArray())
         {
@@ -336,7 +344,7 @@ public final class ModelStore implements ModelStoreInterface
             JsonNode fileNode = entry.get("file");
             if (nameNode != null && fileNode != null)
             {
-                result.add(new LabelIndexEntry(nameNode.asText(), fileNode.asText()));
+                result.add(new LabelIndexEntry(nameNode.asString(), fileNode.asString()));
             }
         }
 
@@ -569,66 +577,6 @@ public final class ModelStore implements ModelStoreInterface
             }
 
             target.restoreLRWeights(weights);
-        }
-    }
-
-    /**
-     * Writes the per-label calibrated thresholds to a binary file.
-     *
-     * @param dir The target directory
-     * @param model The NaiveBayesModel object
-     * @throws IOException Thrown if there was an IO operation failure
-     */
-    private void writeCalibratedThresholds(Path dir, NaiveBayesModel model) throws IOException
-    {
-        Map<String, Double> thresholds = model.snapshotCalibratedThresholds();
-        if (thresholds.isEmpty())
-        {
-            return;
-        }
-
-        Path file = dir.resolve(CALIBRATED_THRESHOLDS_FILE);
-        try (FileOutputStream fos = new FileOutputStream(file.toFile()); DataOutputStream out = new DataOutputStream(new BufferedOutputStream(fos, 1 << 16)))
-        {
-            out.writeInt(thresholds.size());
-            for (Map.Entry<String, Double> e : thresholds.entrySet())
-            {
-                out.writeUTF(e.getKey());
-                out.writeDouble(e.getValue());
-            }
-
-            out.flush();
-            fos.getFD().sync();
-        }
-    }
-
-    /**
-     * Reads the per-label calibrated thresholds from a binary file into the model.
-     *
-     * @param dir The target directory
-     * @param target The NaiveBayesModel object
-     * @throws IOException Thrown if there was an IO operation failure
-     */
-    private void readCalibratedThresholds(Path dir, NaiveBayesModel target) throws IOException
-    {
-        Path file = dir.resolve(CALIBRATED_THRESHOLDS_FILE);
-        if (!Files.exists(file))
-        {
-            return;
-        }
-
-        try (DataInputStream in = new DataInputStream(new BufferedInputStream(new FileInputStream(file.toFile()), 1 << 16)))
-        {
-            int count = in.readInt();
-            Map<String, Double> thresholds = new java.util.HashMap<>();
-            for (int i = 0; i < count; i++)
-            {
-                String label = in.readUTF();
-                double t = in.readDouble();
-                thresholds.put(label, t);
-            }
-
-            target.restoreCalibratedThresholds(thresholds);
         }
     }
 
